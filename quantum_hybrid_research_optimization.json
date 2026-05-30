@@ -1,0 +1,82 @@
+{
+]
+},
+{
+"name": "hybrid_baseline_service",
+"responsibilities": [
+"Run classical baselines (MILP/heuristics/ML)",
+"Provide comparative metrics and optimality gaps"
+]
+},
+{
+"name": "hpo_evolution_service",
+"responsibilities": [
+"Use Optuna and OpenEvolve to search over circuit and optimization hyperparameters",
+"Track candidate performance and maintain Pareto fronts"
+]
+},
+{
+"name": "experiment_registry_rag_service",
+"responsibilities": [
+"Index experiments, configs, results, and notes",
+"Provide hybrid search and question-answering over prior work"
+]
+}
+],
+"workflows": [
+{
+"id": "define_problem_pipeline",
+"triggers": ["api_call", "ui"],
+"steps": [
+"capture_problem_spec",
+"validate_and_normalize",
+"persist_problem_definition"
+]
+},
+{
+"id": "quantum_experiment_pipeline",
+"triggers": ["api_call", "manual"],
+"steps": [
+"select_problem_and_template",
+"generate_circuit",
+"select_backend",
+"run_experiment",
+"apply_error_mitigation_if_enabled",
+"compute_metrics",
+"log_to_mlflow"
+]
+},
+{
+"id": "hpo_evolution_pipeline",
+"triggers": ["manual", "cron"],
+"steps": [
+"propose_candidate_config",
+"run_experiment_or_batch",
+"evaluate_objectives",
+"update_search_state"
+]
+},
+{
+"id": "comparative_evaluation_pipeline",
+"triggers": ["api_call"],
+"steps": [
+"run_classical_baseline",
+"run_selected_quantum_configs",
+"compare_results",
+"store_comparison_report"
+]
+}
+],
+"security": {
+"auth": "oidc_sso",
+"tenant_isolation": "project_and_namespace_level",
+"integration_with_control_plane": true
+},
+"non_functional": {
+"reproducibility": true,
+"extensible_backends": true,
+"scalability": "from_single_node_to_cluster",
+"full_lineage_tracking": true
+}
+}
+}

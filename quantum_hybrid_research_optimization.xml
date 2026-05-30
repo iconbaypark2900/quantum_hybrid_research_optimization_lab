@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ObservabilityTool>mlflow</ObservabilityTool>
+<ObservabilityTool>langfuse</ObservabilityTool>
+<ObservabilityTool>prometheus</ObservabilityTool>
+<ObservabilityTool>grafana</ObservabilityTool>
+</CoreTools>
+
+
+<Services>
+<Service name="problem_definition_service">
+<Responsibility>Define optimization and simulation problems</Responsibility>
+<Responsibility>Convert to QUBO/Ising/Hamiltonian forms</Responsibility>
+</Service>
+<Service name="circuit_generator_service">
+<Responsibility>Generate QAOA/VQE/quantum kernel circuits</Responsibility>
+</Service>
+<Service name="execution_orchestrator_service">
+<Responsibility>Schedule and run experiments on simulators and QPUs</Responsibility>
+</Service>
+<Service name="error_mitigation_service">
+<Responsibility>Apply mitigation techniques and compare outputs</Responsibility>
+</Service>
+<Service name="hybrid_baseline_service">
+<Responsibility>Run classical baselines and compute gaps</Responsibility>
+</Service>
+<Service name="hpo_evolution_service">
+<Responsibility>Search hyperparameters and ansatz designs</Responsibility>
+</Service>
+<Service name="experiment_registry_rag_service">
+<Responsibility>Index experiments and support hybrid retrieval</Responsibility>
+</Service>
+</Services>
+
+
+<Workflows>
+<Workflow id="define_problem_pipeline">
+<Trigger>api_call</Trigger>
+<Trigger>ui</Trigger>
+<Step>capture_problem_spec</Step>
+<Step>validate_and_normalize</Step>
+<Step>persist_problem_definition</Step>
+</Workflow>
+<Workflow id="quantum_experiment_pipeline">
+<Trigger>api_call</Trigger>
+<Trigger>manual</Trigger>
+<Step>select_problem_and_template</Step>
+<Step>generate_circuit</Step>
+<Step>select_backend</Step>
+<Step>run_experiment</Step>
+<Step>apply_error_mitigation_if_enabled</Step>
+<Step>compute_metrics</Step>
+<Step>log_to_mlflow</Step>
+</Workflow>
+<Workflow id="hpo_evolution_pipeline">
+<Trigger>manual</Trigger>
+<Trigger>cron</Trigger>
+<Step>propose_candidate_config</Step>
+<Step>run_experiment_or_batch</Step>
+<Step>evaluate_objectives</Step>
+<Step>update_search_state</Step>
+</Workflow>
+<Workflow id="comparative_evaluation_pipeline">
+<Trigger>api_call</Trigger>
+<Step>run_classical_baseline</Step>
+<Step>run_selected_quantum_configs</Step>
+<Step>compare_results</Step>
+<Step>store_comparison_report</Step>
+</Workflow>
+</Workflows>
+
+
+<Security>
+<Auth>oidc_sso</Auth>
+<TenantIsolation>project_and_namespace_level</TenantIsolation>
+<IntegrationWithControlPlane>true</IntegrationWithControlPlane>
+</Security>
+
+
+<NonFunctional>
+<Reproducibility>true</Reproducibility>
+<ExtensibleBackends>true</ExtensibleBackends>
+<Scalability>from_single_node_to_cluster</Scalability>
+<FullLineageTracking>true</FullLineageTracking>
+</NonFunctional>
+</Project>
