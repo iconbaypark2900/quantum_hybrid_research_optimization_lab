@@ -1,3 +1,29 @@
+"""DEPRECATED DUPLICATE — do not import. See src/hybrid_baseline_service/service.py.
+
+This tree is a second, older copy of every service. `main.py` imports the
+canonical implementations from `src/<name>_service/service.py`; only
+`main_orchestrator.py` still imports this one, and it cannot run anyway
+(this tree needs `pydantic`, which is not installed in .venv).
+
+It is not merely redundant, it is actively misleading: these copies still
+fabricate their results. The version of zero-noise extrapolation in this file's
+sibling `error_mitigation_service.py` pushes every probability TOWARD 0.5 —
+measured: peak 0.70 -> 0.62, entropy 1.32 -> 1.55 bits — which flattens the
+distribution, the opposite of both its own comment ("increasing contrast") and
+of what error mitigation does. The copy under src/ at least sharpens.
+
+Importing raises rather than warns, because a warning on a module that
+fabricates numbers is not proportionate to the harm of using it by accident.
+
+TO RESOLVE: repoint main_orchestrator.py at the src/ tree, confirm the
+constructor signatures line up, then delete this directory. Tracked in
+SCAFFOLDING.md.
+"""
+raise ImportError(
+    "services/hybrid_baseline_service.py is a deprecated duplicate that still fabricates "
+    "its results. Import from src.hybrid_baseline_service.service instead. "
+    "See SCAFFOLDING.md.")
+
 """
 Hybrid Baseline Service Implementation
 """

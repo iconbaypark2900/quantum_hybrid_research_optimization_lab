@@ -47,10 +47,30 @@ class ProblemDefinitionService:
         }
     
     def _convert_to_canonical_form(self, problem_spec: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert problem specification to canonical form (QUBO/Ising/Hamiltonian)"""
-        logger.info(f"Converting problem {problem_spec.get('name', 'Unknown')} to canonical form")
-        
-        # Determine the appropriate canonical form based on problem type
+        """Convert a problem specification to QUBO / Ising / Hamiltonian form.
+
+        NOT IMPLEMENTED. What was here classified the problem type correctly and
+        then returned `linear_terms: {}`, `quadratic_terms: {}` and
+        `hamiltonian_terms: []` — an empty conversion — while logging
+        "Converted problem to canonical form" and reporting
+        `method: "automatic_conversion"`.
+
+        Everything downstream depends on this. A circuit generator handed a QUBO
+        with no terms cannot encode the problem, so the resulting circuit
+        optimises nothing; and because the empty conversion was reported as a
+        success, that failure surfaced as a plausible-looking result rather than
+        an error.
+        """
+        raise NotImplementedError(
+            "Canonical-form conversion is not implemented. It returned an empty "
+            "QUBO while reporting success, so every circuit built from it "
+            "encoded no problem at all. To implement it: build the linear and "
+            "quadratic coefficient maps from the problem definition — "
+            "src/optimization/problems.py already carries the real MaxCut edge "
+            "weights and portfolio covariance structure to derive them from.")
+
+    def _unreachable_original_conversion(self, problem_spec: Dict[str, Any]) -> Dict[str, Any]:
+        # Retained only so the classification logic is not lost; see above.
         problem_type = problem_spec.get('type', 'combinatorial_optimization').lower()
         
         if problem_type in ['combinatorial_optimization', 'maxcut', 'tsp', 'portfolio_optimization']:

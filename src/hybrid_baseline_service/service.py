@@ -1,5 +1,26 @@
-"""
-Hybrid Baseline Service - Minimal Implementation for Phase 3
+"""Hybrid Baseline Service — classical baselines for quantum-advantage claims.
+
+WHY THIS FILE RAISES INSTEAD OF RETURNING NUMBERS
+
+This service exists so a quantum result can be compared against a strong
+classical solver. Until now every baseline here fabricated its answer:
+`objective_value`, `runtime_seconds`, `optimality_gap`, `upper_bound` and
+`lower_bound` were all `np.random.uniform(...)`, and `_evaluate_solution` did
+not evaluate the problem at all — it returned a made-up function of solution
+density plus a RANDOM constraint penalty, so even the local search that looked
+real was optimising a fictitious, non-deterministic objective.
+
+The effect was not a missing feature but a false one: any quantum-advantage
+claim compared against these numbers was unfalsifiable, because the baseline was
+noise wearing the costume of a measurement.
+
+Unimplemented baselines now raise `NotImplementedError` naming what is missing.
+A caller that cannot get an answer is inconvenienced; a caller that gets a
+fabricated one is misled, and has no way to tell. See SCAFFOLDING.md.
+
+Real solvers already exist in `src/optimization/classical.py`
+(`ClassicalMaxCutSolver`, `ClassicalPortfolioSolver`, built on cvxpy) and are
+what these baselines should be wired to.
 """
 import asyncio
 import logging
@@ -12,6 +33,19 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+def _not_implemented(what: str, needs: str) -> "NotImplementedError":
+    """Refuse loudly, and say what it would take to stop refusing.
+
+    A bare NotImplementedError tells a caller they are stuck. This tells them
+    what is missing and where the parts are, which is the difference between a
+    dead end and a task.
+    """
+    return NotImplementedError(
+        f"{what} is not implemented. It previously returned randomly generated "
+        f"numbers, which is worse than failing: a fabricated baseline makes a "
+        f"quantum-advantage comparison unfalsifiable. To implement it: {needs}")
+
+
 class HybridBaselineService:
     """Service for running classical baselines and computing optimality gaps"""
     
@@ -22,37 +56,31 @@ class HybridBaselineService:
         """Run classical baseline algorithm"""
         logger.info(f"Running {algorithm} baseline for problem {problem.get('problem_id', 'Unknown')}")
         
-        # Validate algorithm
-        supported_algorithms = [
-            'milp', 'heuristics', 'metaheuristics', 
-            'machine_learning', 'greedy', 'random_search'
-        ]
-        
-        if algorithm.lower() not in supported_algorithms:
-            return {
-                "status": "failed",
-                "error": f"Algorithm {algorithm} not supported",
-                "supported_algorithms": supported_algorithms,
-                "message": f"Supported algorithms: {', '.join(supported_algorithms)}"
-            }
-        
-        # Run the appropriate algorithm
-        if algorithm.lower() == 'milp':
-            result = await self._run_milp_baseline(problem, **kwargs)
-        elif algorithm.lower() == 'heuristics':
-            result = await self._run_heuristic_baseline(problem, **kwargs)
-        elif algorithm.lower() == 'metaheuristics':
-            result = await self._run_metaheuristic_baseline(problem, **kwargs)
-        elif algorithm.lower() == 'machine_learning':
-            result = await self._run_ml_baseline(problem, **kwargs)
-        elif algorithm.lower() == 'greedy':
-            result = await self._run_greedy_baseline(problem, **kwargs)
-        elif algorithm.lower() == 'random_search':
-            result = await self._run_random_search_baseline(problem, **kwargs)
-        else:
-            # Default to generic baseline
-            result = await self._run_generic_baseline(problem, **kwargs)
-        
+        # The advertised list used to name six algorithms. Three of them
+        # ('greedy', 'random_search', and the fall-through 'generic') dispatched
+        # to methods that do not exist, so asking for a supported algorithm
+        # raised AttributeError. Claiming support you do not have is the same
+        # defect as fabricating a number: the caller is told something untrue
+        # and has no way to check it.
+        #
+        # This map is now derived from what is actually defined, so it cannot
+        # drift out of step with the code again.
+        dispatch = {
+            'milp': self._run_milp_baseline,
+            'heuristics': self._run_heuristic_baseline,
+            'metaheuristics': self._run_metaheuristic_baseline,
+            'machine_learning': self._run_ml_baseline,
+        }
+
+        key = algorithm.lower()
+        if key not in dispatch:
+            raise ValueError(
+                f"Algorithm {algorithm!r} is not available. Defined baselines: "
+                f"{', '.join(sorted(dispatch))}. Note that all of them currently "
+                "raise NotImplementedError — see this module's docstring.")
+
+        result = await dispatch[key](problem, **kwargs)
+
         # Generate a unique baseline ID
         baseline_id = f"base_{hash(algorithm + str(problem.get('problem_id', 'unknown')) + str(datetime.utcnow().timestamp())) % 10000:04d}"
         
@@ -79,219 +107,69 @@ class HybridBaselineService:
         }
     
     async def _run_milp_baseline(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Run Mixed Integer Linear Programming baseline"""
-        logger.info("Running MILP baseline")
-        
-        # Simulate solving a combinatorial optimization problem
-        problem_size = problem.get("n_variables", 20)
-        timeout = kwargs.get("timeout", 300)  # 5 minutes default
-        
-        start_time = asyncio.get_event_loop().time()
-        
-        # Simulate optimization process
-        # Generate a random but somewhat structured solution
-        solution_vector = np.random.choice([0, 1], size=problem_size, p=[0.7, 0.3])  # Sparse solution
-        objective_value = np.sum(solution_vector) * 2.5 + np.random.uniform(-2, 2)  # Add some randomness
-        
-        # Simulate actual optimization metrics
-        runtime = np.random.uniform(0.5, min(timeout, 30.0))  # Runtime less than timeout
-        n_nodes_explored = np.random.randint(100, 10000)
-        gap_to_optimal = np.random.uniform(0.001, 0.05)  # Typically very small for well-solved problems
-        
-        # Simulate what a real MILP solver would return
-        return {
-            "solution": solution_vector.tolist(),
-            "objective_value": float(objective_value),
-            "runtime_seconds": runtime,
-            "nodes_explored": n_nodes_explored,
-            "optimality_gap": gap_to_optimal,
-            "status": "optimal" if gap_to_optimal < 0.01 else "feasible",
-            "upper_bound": objective_value + abs(np.random.normal(0, 0.1)),  # Optimistic upper bound
-            "lower_bound": objective_value - abs(np.random.normal(0, 0.1)),  # Conservative lower bound
-            "solution_quality": "high" if gap_to_optimal < 0.01 else "medium",
-            "termination_reason": "optimal_solution" if gap_to_optimal < 0.01 else "time_limit_reached",
-            "algorithm_details": {
-                "solver": "cplex_simulated",
-                "parameters_used": {
-                    "timelimit": timeout,
-                    "mipgap": kwargs.get("mipgap", 0.001),
-                    "threads": kwargs.get("threads", 4)
-                }
-            },
-            "metrics": {
-                "solution_quality_score": 1.0 - gap_to_optimal,  # Higher is better
-                "efficiency_ratio": objective_value / runtime,  # Objective per second
-                "constraint_satisfaction": 0.98 + np.random.uniform(0, 0.02)  # Near perfect
-            }
-        }
-    
+        """Mixed-integer programming baseline.
+
+        Previously reported `solver: "cplex_simulated"` alongside an
+        `upper_bound` and `lower_bound` drawn from np.random.normal — bounds
+        whose entire purpose is rigour, fabricated.
+        """
+        raise _not_implemented(
+            "the MILP/exact baseline",
+            "wire it to ClassicalMaxCutSolver / ClassicalPortfolioSolver in "
+            "src/optimization/classical.py, which solve the real problem with "
+            "cvxpy binary variables, and report the solver's own status, bounds "
+            "and measured wall-clock runtime")
+
     async def _run_heuristic_baseline(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Run heuristic baseline (e.g., greedy, local search)"""
-        logger.info("Running heuristic baseline")
-        
-        problem_size = problem.get("n_variables", 20)
-        max_iterations = kwargs.get("max_iterations", 1000)
-        
-        start_time = asyncio.get_event_loop().time()
-        
-        # Simulate a greedy or local search heuristic
-        # Start with a random solution
-        current_solution = np.random.choice([0, 1], size=problem_size, p=[0.6, 0.4])
-        
-        # Perform local improvements
-        best_objective = self._evaluate_solution(current_solution, problem)
-        best_solution = current_solution.copy()
-        
-        for iteration in range(min(max_iterations, 500)):  # Limit iterations for demo
-            # Generate neighbor by flipping one random bit
-            neighbor = current_solution.copy()
-            flip_idx = np.random.randint(0, problem_size)
-            neighbor[flip_idx] = 1 - neighbor[flip_idx]
-            
-            neighbor_objective = self._evaluate_solution(neighbor, problem)
-            
-            # Accept if better (greedy approach)
-            if neighbor_objective > best_objective:
-                best_solution = neighbor.copy()
-                best_objective = neighbor_objective
-        
-        runtime = np.random.uniform(0.1, 2.0)  # Heuristics are typically fast
-        
-        return {
-            "solution": best_solution.tolist(),
-            "objective_value": float(best_objective),
-            "runtime_seconds": runtime,
-            "iterations": min(max_iterations, 500),
-            "status": "completed",
-            "optimality_gap": np.random.uniform(0.05, 0.25),  # Heuristics typically have larger gaps
-            "solution_quality": "medium",
-            "algorithm_details": {
-                "approach": "greedy_local_search",
-                "neighborhood_size": "bit_flip",
-                "acceptance_criterion": "improvement_only"
-            },
-            "metrics": {
-                "solution_quality_score": 0.7,  # Heuristic solutions are generally good but not optimal
-                "efficiency_ratio": best_objective / runtime,
-                "constraint_satisfaction": 0.95 + np.random.uniform(0, 0.05)
-            }
-        }
-    
+        """Local-search heuristic baseline.
+
+        The search loop here was real, but it optimised `_evaluate_solution`,
+        which does not evaluate the problem — so the machinery was genuine and
+        the objective was fiction. Its reported runtime and optimality gap were
+        random regardless.
+        """
+        raise _not_implemented(
+            "the heuristic baseline",
+            "give it a real objective (see solve_maxcut_greedy / "
+            "solve_portfolio_greedy in src/optimization/classical.py), then keep "
+            "the local-search loop and measure runtime with time.perf_counter")
+
     async def _run_metaheuristic_baseline(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Run metaheuristic baseline (e.g., genetic algorithm, simulated annealing)"""
-        logger.info("Running metaheuristic baseline")
-        
-        problem_size = problem.get("n_variables", 20)
-        population_size = kwargs.get("population_size", min(50, max(10, problem_size // 2))
-        max_generations = kwargs.get("max_generations", 100)
-        
-        start_time = asyncio.get_event_loop().time()
-        
-        # Simulate a genetic algorithm process
-        # Initialize population
-        population = [np.random.choice([0, 1], size=problem_size, p=[0.6, 0.4]) 
-                     for _ in range(population_size)]
-        
-        best_solution = None
-        best_objective = float('-inf')
-        
-        for generation in range(max_generations):
-            # Evaluate fitness
-            for individual in population:
-                fitness = self._evaluate_solution(individual, problem)
-                if fitness > best_objective:
-                    best_objective = fitness
-                    best_solution = individual.copy()
-            
-            # Apply selection, crossover, mutation (simulated)
-            # In a real implementation this would be proper GA operators
-            for i in range(len(population)):
-                # Simulate evolution operations
-                if np.random.random() < 0.1:  # 10% chance of mutation
-                    idx = np.random.randint(0, problem_size)
-                    population[i][idx] = 1 - population[i][idx]  # Bit flip mutation
-        
-        runtime = np.random.uniform(1.0, 10.0)  # Metaheuristics take more time
-        
-        return {
-            "solution": best_solution.tolist() if best_solution is not None else [],
-            "objective_value": float(best_objective),
-            "runtime_seconds": runtime,
-            "generations": max_generations,
-            "population_size": population_size,
-            "status": "completed",
-            "optimality_gap": np.random.uniform(0.02, 0.15),  # Better than simple heuristics
-            "solution_quality": "good",
-            "algorithm_details": {
-                "approach": "genetic_algorithm_simulation",
-                "selection_method": "tournament",
-                "crossover_rate": 0.8,
-                "mutation_rate": 0.1
-            },
-            "metrics": {
-                "solution_quality_score": 0.85,  # Better than heuristics
-                "efficiency_ratio": best_objective / runtime,
-                "constraint_satisfaction": 0.97 + np.random.uniform(0, 0.03)
-            }
-        }
-    
+        """Metaheuristic (GA / simulated annealing) baseline."""
+        raise _not_implemented(
+            "the metaheuristic baseline",
+            "run a real GA or annealer against a real objective function; the "
+            "population mechanics in src/hpo_evolution_service/service.py are "
+            "genuine and can be reused, but they need something true to optimise")
+
     async def _run_ml_baseline(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Run machine learning baseline"""
-        logger.info("Running ML baseline")
-        
-        problem_size = problem.get("n_variables", 20)
-        
-        start_time = asyncio.get_event_loop().time()
-        
-        # Simulate ML model prediction
-        # This could be a learned heuristic or direct optimization
-        solution_vector = np.random.choice([0, 1], size=problem_size, p=[0.55, 0.45])  # Slightly biased solution
-        objective_value = np.sum(solution_vector) * 2.0 + np.random.uniform(-1, 1)
-        
-        runtime = np.random.uniform(0.01, 0.5)  # ML inference is typically fast
-        
-        return {
-            "solution": solution_vector.tolist(),
-            "objective_value": float(objective_value),
-            "runtime_seconds": runtime,
-            "status": "completed",
-            "optimality_gap": np.random.uniform(0.05, 0.30),  # ML approaches can vary in performance
-            "solution_quality": "variable",
-            "algorithm_details": {
-                "approach": "neural_network_or_ml_model",
-                "model_type": "feedforward_nn_simulated",
-                "training_approach": "learned_heuristic_approximation"
-            },
-            "metrics": {
-                "solution_quality_score": 0.65,  # Variable depending on training quality
-                "efficiency_ratio": objective_value / runtime,  # Usually very efficient
-                "constraint_satisfaction": 0.90 + np.random.uniform(0, 0.10)
-            }
-        }
-    
+        """Learned-heuristic baseline.
+
+        Reported `model_type: "feedforward_nn_simulated"`. There is no model.
+        """
+        raise _not_implemented(
+            "the ML baseline",
+            "train an actual model, or delete this baseline — an unimplemented "
+            "learned heuristic is not a baseline anything should be compared to")
+
     def _evaluate_solution(self, solution: np.ndarray, problem: Dict[str, Any]) -> float:
-        """Evaluate a solution for the given problem - simplified version"""
-        # In a real implementation, this would evaluate the actual objective function
-        # For now, we'll return a value based on the solution characteristics
-        n_ones = np.sum(solution)
-        n_zeros = len(solution) - n_ones
-        
-        # Base objective from solution density
-        base_obj = n_ones * 1.5
-        
-        # Add diversity penalty
-        diversity_penalty = 0.1 * (n_ones * n_zeros) / len(solution) if len(solution) > 0 else 0
-        
-        # Add problem-specific characteristics if available
-        if 'constraints' in problem:
-            # Simulate constraint satisfaction
-            constraint_violation = np.random.uniform(0, 2)  # Random constraint penalty
-            constraint_penalty = constraint_violation
-        else:
-            constraint_penalty = 0
-        
-        return float(base_obj - diversity_penalty - constraint_penalty)
-    
+        """Objective value of a candidate solution.
+
+        THE ROOT FABRICATION. This returned `n_ones * 1.5` minus a density term
+        minus `np.random.uniform(0, 2)` — a made-up function of how many bits
+        were set, with a random penalty. It never looked at the problem.
+
+        Two consequences worth stating separately. It was not the problem's
+        objective, so any solution "optimised" against it was meaningless. And
+        it was non-deterministic, so the local search compared incomparable
+        values and could not even hill-climb its own fiction reliably.
+        """
+        raise _not_implemented(
+            "solution evaluation",
+            "compute the actual objective from the problem definition — for "
+            "MaxCut, sum the weights of cut edges; for the portfolio problem, "
+            "the risk-adjusted return in src/optimization/problems.py")
+
     async def compute_optimality_gaps(self, quantum_result: Dict[str, Any], 
                                     classical_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Compute optimality gaps between quantum and classical results"""

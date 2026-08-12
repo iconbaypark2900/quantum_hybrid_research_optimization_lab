@@ -1,0 +1,10 @@
+TASK_ID=qoptisolve-integration-001
+DESCRIPTION=Integrate qOptiSolve optimizer modules into quantum_hybrid_research_optimization_lab
+CURRENT_PHASE=complete
+CREATED_AT=2026-05-31T01:15:08
+UPDATED_AT=2026-05-31T01:15:09
+APPROVED_PLAN=0
+APPROVED_BUILD=0
+APPROVED_PATCH=0
+APPROVED_REVIEW=0
+APPROVED_CLOSE=0

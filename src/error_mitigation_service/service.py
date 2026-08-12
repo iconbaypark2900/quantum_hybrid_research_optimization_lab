@@ -11,6 +11,15 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _not_implemented(what: str, needs: str) -> "NotImplementedError":
+    """Refuse loudly, and say what it would take to stop refusing."""
+    return NotImplementedError(
+        f"{what} is not implemented. What was here produced plausible-looking "
+        f"'mitigated' output without performing the technique, which is worse "
+        f"than failing: the caller cannot tell a mitigated result from an "
+        f"unmitigated one. To implement it: {needs}")
+
+
 class ErrorMitigationService:
     """Service for applying quantum error mitigation techniques"""
     
@@ -66,6 +75,11 @@ class ErrorMitigationService:
                 "message": f"{technique.upper()} error mitigation applied successfully"
             }
         
+        except NotImplementedError:
+            # Must propagate. Catching this would convert a loud refusal back
+            # into a soft {"status": "failed"} dict — the exact silent-failure
+            # pattern this change exists to remove.
+            raise
         except Exception as e:
             logger.error(f"Error applying {technique} mitigation: {e}")
             import traceback
@@ -78,283 +92,36 @@ class ErrorMitigationService:
             }
     
     async def _apply_zne(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Apply Zero Noise Extrapolation (ZNE)"""
-        logger.info("Applying Zero Noise Extrapolation (ZNE)")
-        
-        # For ZNE, we would typically run the circuit at different noise levels
-        # and extrapolate to zero noise. For simulation, we'll increase contrast
-        # in the probability distribution to mimic noise reduction.
-        
-        # Copy raw results to avoid modifying original
-        mitigated_results = raw_results.copy()
-        
-        # Extract counts and probabilities if available
-        if "probabilities" in raw_results:
-            original_probs = raw_results["probabilities"]
-            states = list(original_probs.keys())
-            original_values = list(original_probs.values())
-            
-            # Apply ZNE by increasing the contrast between high and low probability states
-            # This simulates the effect of reducing quantum noise
-            avg_prob = np.mean(original_values)
-            
-            adjusted_probs = []
-            for prob in original_values:
-                if prob > avg_prob:
-                    # Boost high probability states (more likely to be correct)
-                    adjusted_prob = min(1.0, prob * 1.15)  # Boost by 15%
-                else:
-                    # Suppress low probability states (likely noise artifacts)
-                    adjusted_prob = max(0.0, prob * 0.85)  # Reduce by 15%
-                adjusted_probs.append(adjusted_prob)
-            
-            # Renormalize probabilities
-            total_prob = sum(adjusted_probs)
-            if total_prob > 0:
-                normalized_probs = [p / total_prob for p in adjusted_probs]
-                
-                # Update mitigated results
-                mitigated_results["probabilities"] = dict(zip(states, normalized_probs))
-                
-                # If counts are available, update them proportionally
-                if "counts" in raw_results:
-                    original_counts = raw_results["counts"]
-                    total_shots = sum(original_counts.values())
-                    new_counts = {state: int(prob * total_shots) for state, prob in zip(states, normalized_probs)}
-                    
-                    # Adjust for rounding errors
-                    diff = total_shots - sum(new_counts.values())
-                    if diff != 0 and new_counts:
-                        most_likely_state = max(new_counts, key=new_counts.get)
-                        new_counts[most_likely_state] += diff
-                    
-                    mitigated_results["counts"] = new_counts
-        
-        # Adjust objective values if present (typically improvement in optimization)
-        if "average_objective_value" in raw_results:
-            original_obj = raw_results["average_objective_value"]
-            # ZNE typically improves the objective value slightly
-            improvement_factor = kwargs.get("zne_imp_rovement_factor", 0.05)  # 5% improvement
-            mitigated_obj = original_obj * (1 + improvement_factor) if original_obj >= 0 else original_obj * (1 - improvement_factor)
-            mitigated_results["average_objective_value"] = mitigated_obj
-            mitigated_results["zne_improvement"] = mitigated_obj - original_obj
-        
-        # Add technique-specific metadata
-        mitigated_results["mitigation_applied"] = "zne"
-        mitigated_results["noise_reduction_factor"] = kwargs.get("noise_reduction_factor", 0.2)  # Simulated 20% noise reduction
-        
-        return mitigated_results
-    
+        """Zero-noise extrapolation.
+
+        NOT IMPLEMENTED. What was here reshaped a single distribution by
+        boosting above-average probabilities 15% and suppressing the rest. That
+        sharpens in the right direction, so it looked plausible — but ZNE is not
+        a reshaping heuristic. It requires running the circuit at AMPLIFIED
+        noise levels and extrapolating back to zero, and no amplified run ever
+        happened here.
+
+        It also fabricated its headline number: `zne_improvement` was a fixed
+        5% of the input objective, and `noise_reduction_factor` was a constant
+        reported as though measured. Both were independent of the data.
+
+        (Separately, the kwarg was misspelled `zne_imp_rovement_factor`, so a
+        caller could never override the 5% anyway.)
+        """
+        raise _not_implemented("ZNE error mitigation", "run the circuit at noise scale factors lambda = 1, 2, 3 via unitary folding, fit a Richardson or linear model to the observed expectation values, and evaluate it at lambda = 0; cite Temme et al. (2017) / Li & Benjamin (2017) in the docstring so spec-audit can check it against the source")
+
     async def _apply_pec(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Apply Probabilistic Error Cancellation (PEC)"""
-        logger.info("Applying Probabilistic Error Cancellation (PEC)")
-        
-        # PEC learns the error characteristics of the quantum device and probabilistically
-        # undoes them. For simulation, we'll adjust the distribution to reflect error cancellation.
-        
-        mitigated_results = raw_results.copy()
-        
-        if "probabilities" in raw_results:
-            original_probs = raw_results["probabilities"]
-            states = list(original_probs.keys())
-            original_values = list(original_probs.values())
-            
-            # Simulate PEC by sharpening the probability distribution
-            # PEC typically increases the probability of the most likely states while decreasing others
-            sorted_indices = np.argsort(original_values)[::-1]  # Sort in descending order
-            
-            # Determine how many high-probability states to boost
-            n_boost = max(1, len(original_values) // 4)  # Boost top 25% of states
-            
-            adjusted_probs = original_values.copy()
-            for idx in sorted_indices[:n_boost]:
-                # Boost high probability states
-                adjusted_probs[idx] = min(1.0, original_values[idx] * 1.25)  # Boost by 25%
-            
-            # Reduce probability of remaining states proportionally
-            boost_amount = sum(adjusted_probs) - sum(original_values)
-            remaining_indices = sorted_indices[n_boost:]
-            for idx in remaining_indices:
-                reduction_factor = max(0.0, original_values[idx] * 0.9)  # Reduce by 10%
-                adjusted_probs[idx] = original_values[idx] - (boost_amount * reduction_factor / sum([original_values[i] for i in remaining_indices]))
-            
-            # Renormalize
-            total_prob = sum(adjusted_probs)
-            if total_prob > 0:
-                normalized_probs = [p / total_prob for p in adjusted_probs]
-                mitigated_results["probabilities"] = dict(zip(states, normalized_probs))
-                
-                # Update counts if available
-                if "counts" in raw_results:
-                    original_counts = raw_results["counts"]
-                    total_shots = sum(original_counts.values())
-                    new_counts = {state: int(prob * total_shots) for state, prob in zip(states, normalized_probs)}
-                    
-                    # Adjust for rounding errors
-                    diff = total_shots - sum(new_counts.values())
-                    if diff != 0 and new_counts:
-                        most_frequent_state = max(new_counts, key=new_counts.get)
-                        new_counts[most_frequent_state] += diff
-                    
-                    mitigated_results["counts"] = new_counts
-        
-        # Adjust objective value
-        if "average_objective_value" in raw_results:
-            original_obj = raw_results["average_objective_value"]
-            improvement_factor = kwargs.get("pec_improvement_factor", 0.08)  # 8% improvement
-            mitigated_obj = original_obj * (1 + improvement_factor) if original_obj >= 0 else original_obj * (1 - improvement_factor)
-            mitigated_results["average_objective_value"] = mitigated_obj
-            mitigated_results["pec_improvement"] = mitigated_obj - original_obj
-        
-        # Add technique-specific metadata
-        mitigated_results["mitigation_applied"] = "pec"
-        mitigated_results["pec_samples_used"] = kwargs.get("samples", 100)
-        
-        return mitigated_results
-    
+        """Probabilistic error cancellation. NOT IMPLEMENTED."""
+        raise _not_implemented("PEC error mitigation", "characterise the noise channel, build a quasi-probability decomposition of the ideal operation, and Monte-Carlo sample it with the sign correction — PEC needs a noise model, and there is none here")
+
     async def _apply_cdr(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Apply Clifford Data Regression (CDR)"""
-        logger.info("Applying Clifford Data Regression (CDR)")
-        
-        # CDR uses classically simulable (Clifford) circuits to learn error patterns
-        # Then applies regression to extrapolate to the full quantum results
-        # For simulation, we'll apply a learned correction factor
-        
-        mitigated_results = raw_results.copy()
-        
-        if "probabilities" in raw_results:
-            original_probs = raw_results["probabilities"]
-            states = list(original_probs.keys())
-            original_values = list(original_probs.values())
-            
-            # Simulate CDR by applying corrections based on a learned model
-            # In real CDR, this would use regression on Clifford circuit results
-            # For simulation, apply a simple learned correction function
-            corrected_probs = []
-            for i, prob in enumerate(original_values):
-                # Simulate a learned correction: increase contrast slightly
-                state_complexity = states[i].count('1')  # Number of 1s in state
-                # Apply correction based on state complexity and original probability
-                avg_prob = np.mean(original_values)
-                if prob > avg_prob:
-                    # For high-probability states, increase confidence
-                    corrected_prob = min(1.0, prob * (1.0 + 0.05 + (state_complexity * 0.005)))
-                else:
-                    # For low-probability states, decrease slightly
-                    corrected_prob = max(0.0, prob * (1.0 - 0.03))
-                corrected_probs.append(max(0.0, corrected_prob))  # Ensure non-negative
-            
-            # Renormalize probabilities
-            total_prob = sum(corrected_probs)
-            if total_prob > 0:
-                normalized_probs = [p / total_prob for p in corrected_probs]
-                mitigated_results["probabilities"] = dict(zip(states, normalized_probs))
-                
-                # Update counts if available
-                if "counts" in raw_results:
-                    original_counts = raw_results["counts"]
-                    total_shots = sum(original_counts.values())
-                    new_counts = {state: int(prob * total_shots) for state, prob in zip(states, normalized_probs)}
-                    
-                    # Adjust for rounding errors
-                    diff = total_shots - sum(new_counts.values())
-                    if diff != 0 and new_counts:
-                        most_likely_state = max(new_counts, key=new_counts.get)
-                        new_counts[most_likely_state] += diff
-                    
-                    mitigated_results["counts"] = new_counts
-        
-        # Adjust objective value
-        if "average_objective_value" in raw_results:
-            original_obj = raw_results["average_objective_value"]
-            improvement_factor = kwargs.get("cdr_improvement_factor", 0.04)  # 4% improvement
-            mitigated_obj = original_obj * (1 + improvement_factor) if original_obj >= 0 else original_obj * (1 - improvement_factor)
-            mitigated_results["average_objective_value"] = mitigated_obj
-            mitigated_results["cdr_improvement"] = mitigated_obj - original_obj
-        
-        # Add technique-specific metadata
-        mitigated_results["mitigation_applied"] = "cdr"
-        mitigated_results["cdr_model_accuracy"] = kwargs.get("model_accuracy", 0.85)
-        
-        return mitigated_results
-    
+        """Clifford data regression. NOT IMPLEMENTED."""
+        raise _not_implemented("CDR error mitigation", "generate near-Clifford training circuits that are classically simulable, learn the map from noisy to exact expectation values on them, and apply it to the target circuit")
+
     async def _apply_vnle(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Apply Variational Noise Learning Estimation (VNLE)"""
-        logger.info("Applying Variational Noise Learning Estimation (VNLE)")
-        
-        # VNLE learns a noise model variationally and corrects for it
-        # For simulation, we'll apply a learned noise correction based on training data
-        
-        mitigated_results = raw_results.copy()
-        
-        if "probabilities" in raw_results:
-            original_probs = raw_results["probabilities"]
-            states = list(original_probs.keys())
-            original_values = list(original_probs.values())
-            
-            # Simulate VNLE by learning a noise model and applying correction
-            # This is more sophisticated than other methods as it learns the full noise channel
-            # For simulation, we'll apply a state-dependent correction
-            corrected_probs = []
-            for i, prob in enumerate(original_values):
-                # Apply correction based on the state pattern and probability
-                n_qubits = kwargs.get('n_qubits', len(states[0]) if states else 4)
-                
-                # Calculate how 'central' this state is (Hamming distance from uniform)
-                state_pattern = states[i]
-                ones_count = state_pattern.count('1')
-                zeros_count = state_pattern.count('0')
-                balance_score = abs(ones_count - zeros_count) / n_qubits  # Closer to 0 = more balanced
-                
-                # Apply correction based on state characteristics
-                avg_prob = np.mean(original_values)
-                if balance_score < 0.3 and prob < avg_prob:  # Balanced states that are low probability
-                    # These might be real results masked by noise - boost them
-                    correction = 1.1
-                elif balance_score > 0.7 and prob > avg_prob:  # Unbalanced states that are high probability
-                    # These might be noise artifacts - suppress them
-                    correction = 0.9
-                else:
-                    # For other states, apply standard correction
-                    correction = 1.05 if prob > avg_prob else 0.95
-                
-                corrected_prob = min(1.0, max(0.0, prob * correction))
-                corrected_probs.append(corrected_prob)
-            
-            # Renormalize
-            total_prob = sum(corrected_probs)
-            if total_prob > 0:
-                normalized_probs = [p / total_prob for p in corrected_probs]
-                mitigated_results["probabilities"] = dict(zip(states, normalized_probs))
-                
-                # Update counts if available
-                if "counts" in raw_results:
-                    original_counts = raw_results["counts"]
-                    total_shots = sum(original_counts.values())
-                    new_counts = {state: int(prob * total_shots) for state, prob in zip(states, normalized_probs)}
-                    
-                    # Adjust for rounding errors
-                    diff = total_shots - sum(new_counts.values())
-                    if diff != 0 and new_counts:
-                        most_balanced_state = min(new_counts, key=lambda x: abs(x.count('1') - x.count('0')))
-                        new_counts[most_balanced_state] += diff
-                    
-                    mitigated_results["counts"] = new_counts
-        
-        # Adjust objective value
-        if "average_objective_value" in raw_results:
-            original_obj = raw_results["average_objective_value"]
-            improvement_factor = kwargs.get("vnle_improvement_factor", 0.06)  # 6% improvement
-            mitigated_obj = original_obj * (1 + improvement_factor) if original_obj >= 0 else original_obj * (1 - improvement_factor)
-            mitigated_results["average_objective_value"] = mitigated_obj
-            mitigated_results["vnle_improvement"] = mitigated_obj - original_obj
-        
-        # Add technique-specific metadata
-        mitigated_results["mitigation_applied"] = "vnle"
-        mitigated_results["vnle_learning_rounds"] = kwargs.get("learning_rounds", 50)
-        
-        return mitigated_results
-    
+        """Virtual/noise-less estimation. NOT IMPLEMENTED."""
+        raise _not_implemented("VNLE error mitigation", "implement the estimator properly, or remove the technique from the advertised list rather than shipping a placeholder for it")
+
     async def compare_mitigation_techniques(self, raw_results: Dict[str, Any], 
                                           techniques: List[str] = None) -> Dict[str, Any]:
         """Compare multiple mitigation techniques on the same results"""
