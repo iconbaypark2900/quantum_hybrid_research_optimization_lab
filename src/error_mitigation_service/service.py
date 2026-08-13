@@ -92,23 +92,45 @@ class ErrorMitigationService:
             }
     
     async def _apply_zne(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Zero-noise extrapolation.
+        """Zero-noise extrapolation from measurements at amplified noise levels.
 
-        NOT IMPLEMENTED. What was here reshaped a single distribution by
-        boosting above-average probabilities 15% and suppressing the rest. That
-        sharpens in the right direction, so it looked plausible — but ZNE is not
-        a reshaping heuristic. It requires running the circuit at AMPLIFIED
-        noise levels and extrapolating back to zero, and no amplified run ever
-        happened here.
+        Requires what ZNE actually needs and what the previous version never
+        had: expectation values measured at two or more noise scale factors.
+        Supply them as
 
-        It also fabricated its headline number: `zne_improvement` was a fixed
-        5% of the input objective, and `noise_reduction_factor` was a constant
-        reported as though measured. Both were independent of the data.
+            raw_results["noise_scaled_values"] = {1.0: <E>, 3.0: <E>, 5.0: <E>}
 
-        (Separately, the kwarg was misspelled `zne_imp_rovement_factor`, so a
-        caller could never override the 5% anyway.)
+        obtained by running the SAME logical circuit folded to each factor (see
+        zne.fold_gates). Given a single unamplified run there is nothing to
+        extrapolate from, and this says so instead of reshaping the one
+        distribution it has and calling the result mitigated.
+
+        Sources: Temme et al. (2017); Li & Benjamin (2017); Giurgica-Tiron et
+        al. (2020) for unitary folding as digital noise scaling.
         """
-        raise _not_implemented("ZNE error mitigation", "run the circuit at noise scale factors lambda = 1, 2, 3 via unitary folding, fit a Richardson or linear model to the observed expectation values, and evaluate it at lambda = 0; cite Temme et al. (2017) / Li & Benjamin (2017) in the docstring so spec-audit can check it against the source")
+        from .zne import extrapolate_to_zero_noise
+
+        measured = raw_results.get("noise_scaled_values")
+        if not measured:
+            raise _not_implemented(
+                "ZNE from a single unamplified run",
+                "supply raw_results['noise_scaled_values'] as "
+                "{scale_factor: expectation_value} with at least two distinct "
+                "factors. Producing them end-to-end needs circuit execution, "
+                "which is itself not implemented (see SCAFFOLDING.md) and needs "
+                "qiskit-aer installed into .venv. The extrapolation half is "
+                "implemented and tested in src/error_mitigation_service/zne.py")
+
+        factors = [float(k) for k in measured.keys()]
+        values = [float(v) for v in measured.values()]
+        method = kwargs.get("method", "richardson")
+
+        out = extrapolate_to_zero_noise(factors, values, method=method)
+        mitigated = dict(raw_results)
+        mitigated["average_objective_value"] = out["zero_noise_estimate"]
+        mitigated["mitigation_applied"] = "zne"
+        mitigated["zne"] = out
+        return mitigated
 
     async def _apply_pec(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Probabilistic error cancellation. NOT IMPLEMENTED."""

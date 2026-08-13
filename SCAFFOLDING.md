@@ -22,31 +22,62 @@ unfalsifiable one, which is the specific failure the research-integrity work in
 
 | Component | What it faked | What it needs |
 |---|---|---|
-| `src/hybrid_baseline_service/service.py` — MILP/exact baseline | `objective_value`, `runtime`, `optimality_gap`, and `upper_bound`/`lower_bound` — bounds whose entire purpose is rigour — all random; reported `solver: "cplex_simulated"` | a real solver; see the note on `ClassicalMaxCutSolver` below |
-| ” — heuristic baseline | the local search was genuine but optimised `_evaluate_solution`, which is fiction; runtime and gap random | a real objective, then keep the search loop |
+| ~~MILP/exact baseline~~ | — | **DONE.** Solves the real graph via linearised MILP; verified against brute force for n = 4..8 |
+| ~~heuristic baseline~~ | — | **DONE.** Hill-climbs the real cut value to a genuine local optimum; runtime measured |
 | ” — metaheuristic baseline | same | a real objective; the GA mechanics in `src/hpo_evolution_service/` are genuine and reusable |
 | ” — ML baseline | reported `model_type: "feedforward_nn_simulated"`; there is no model | train a model, or delete the baseline |
 | ” — `_evaluate_solution` | **the root fabrication**: returned a made-up function of how many bits were set, minus `np.random.uniform(0, 2)` — never looked at the problem, and was non-deterministic, so the search compared incomparable values | compute the real objective (cut weight / risk-adjusted return) |
 | `src/execution_orchestrator_service/service.py` | sampled counts from a binomial with no circuit involved; `execution_time` random; `average_objective_value` from a Hamming-weight formula labelled "Simple example"; advertised a 32-qubit backend that does not exist | run on `qiskit-aer` (pinned in requirements.txt but **not installed** — `./.venv/bin/pip install qiskit qiskit-aer`) |
-| `src/error_mitigation_service/service.py` — ZNE | reshaped one distribution by ±15%. The direction is right (it sharpens), but ZNE requires running at **amplified** noise levels and extrapolating, and no amplified run happened. `zne_improvement` was a fixed 5% of the input, independent of the data | noise scaling by unitary folding at λ = 1, 2, 3; Richardson or linear fit; evaluate at λ = 0 |
+| `src/error_mitigation_service/service.py` — ZNE | as described below | **PARTLY DONE.** The extrapolation half is implemented and tested (`zne.py`): Richardson and least-squares linear fits, plus unitary folding. It now requires real measurements at ≥2 noise factors and refuses a single unamplified run. Producing those measurements end-to-end still needs circuit execution |
 | ” — PEC, CDR, VNLE | same shape: plausible output, technique never performed | PEC needs a characterised noise model; CDR needs near-Clifford training circuits |
 | `src/problem_definition_service/service.py` — canonical form | returned an **empty** QUBO (`linear_terms: {}`, `quadratic_terms: {}`) while logging success and reporting `method: "automatic_conversion"` | build the coefficient maps; `src/optimization/problems.py` already holds real MaxCut edge weights and portfolio covariance |
 
-## Known-broken, not yet fixed
+## Fixed since this file was written
 
-**`src/optimization/classical.py` — `ClassicalMaxCutSolver` does not solve.**
-Its objective `x[i]*(1-x[j]) + x[j]*(1-x[i])` is bilinear, so cvxpy rejects it:
-*"Problem does not follow DCP rules."* The solver catches the exception, warns,
-and returns `{'partition': None, 'cut_value': None, 'status': 'error'}`.
+**`ClassicalMaxCutSolver` now solves.** It was rewritten with the MILP
+linearisation described below and verified against brute-force enumeration for
+n = 4..8, plus two graphs computable by hand (a 4-cycle cuts all 4 edges; a
+triangle cuts only 2, because an odd cycle is not bipartite). Negative weights
+are now refused, since the linearisation is exact only while the objective
+pushes `y_ij` up.
 
-That return is honest, but **the test suite passes anyway** — the tests assert on
-shape and status, never that a cut was found. So the lab has a headline solver
-that has never solved anything, with green tests over it.
+`tests/test_baselines_oracle.py` pins this. It was validated by reintroducing
+the bilinear objective: 11 of 15 tests fail, and all 15 pass again once
+restored.
 
-The fix is textbook MILP linearisation: introduce `y_ij ∈ [0,1]` per edge with
+**Zero-noise extrapolation is half-implemented, honestly.**
+`src/error_mitigation_service/zne.py` has the real mathematics — Richardson
+extrapolation (exact on polynomials of degree < k, which the tests demand to
+machine precision), least-squares linear extrapolation, and unitary folding with
+odd scale factors only. On an exponentially decaying signal it reduces the error
+against ground truth from 0.139 to 0.0027.
+
+What remains is the other half: producing measurements at amplified noise
+levels, which requires circuit execution, which requires `qiskit-aer` in `.venv`.
+Until then `_apply_zne` demands `noise_scaled_values` from the caller and refuses
+a single unamplified run.
+
+## Known-broken, historical record
+
+**`ClassicalMaxCutSolver` did not solve** (fixed — kept here because the failure
+mode is instructive).
+Its objective was `x[i]*(1-x[j]) + x[j]*(1-x[i])`, which is bilinear, so cvxpy
+rejected it: *"Problem does not follow DCP rules."* The solver caught the
+exception, warned, and returned
+`{'partition': None, 'cut_value': None, 'status': 'error'}`.
+
+That return was honest, but **the test suite passed anyway** — the tests asserted
+on shape and status, never that a cut was found. The lab had a headline solver
+that had never solved anything, with green tests over it, for as long as it
+existed.
+
+Worth keeping because of what it says about test design: shape tests cannot
+distinguish a working solver from a broken one. Only an oracle can, which is why
+`tests/test_baselines_oracle.py` now enumerates.
+
+The fix was textbook MILP linearisation: `y_ij ∈ [0,1]` per edge with
 `y_ij ≤ x_i + x_j`, `y_ij ≤ 2 − x_i − x_j`, `y_ij ≥ x_i − x_j`, `y_ij ≥ x_j − x_i`,
-then maximise `Σ w_ij · y_ij`. That is linear, hence DCP-compliant, and exact for
-binary `x`.
+maximising `Σ w_ij · y_ij` — linear, hence DCP-compliant, and exact for binary `x`.
 
 ## Duplicate service tree
 
@@ -74,9 +105,11 @@ what to trust:
 
 - `src/optimization/problems.py` — real MaxCut and portfolio problem structures,
   seeded and deterministic.
-- `src/optimization/classical.py` — `solve_maxcut_greedy` /
-  `solve_portfolio_greedy` are real greedy heuristics. (`ClassicalMaxCutSolver`
-  is real in intent but non-functional; see above.)
+- `src/optimization/classical.py` — `ClassicalMaxCutSolver` now solves exactly
+  and is verified against brute force; `solve_maxcut_greedy` /
+  `solve_portfolio_greedy` are real greedy heuristics.
+- `src/error_mitigation_service/zne.py` — real Richardson and linear
+  extrapolation, and unitary folding.
 - `src/hpo_evolution_service/service.py` — genuine GA mechanics. Its randomness
   is algorithmic (mutation, crossover, tournament selection), not fabricated
   results, and should be left alone.
