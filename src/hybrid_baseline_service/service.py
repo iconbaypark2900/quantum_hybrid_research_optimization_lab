@@ -26,8 +26,9 @@ import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+import time
+
 import numpy as np
-import pandas as pd
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,33 @@ def _not_implemented(what: str, needs: str) -> "NotImplementedError":
         f"{what} is not implemented. It previously returned randomly generated "
         f"numbers, which is worse than failing: a fabricated baseline makes a "
         f"quantum-advantage comparison unfalsifiable. To implement it: {needs}")
+
+
+def _as_maxcut(problem: Dict[str, Any]):
+    """Build a real MaxCutProblem from a problem dict.
+
+    Baselines must solve the ACTUAL problem. Accepting a dict and inventing a
+    structure from `n_variables` is how the previous version ended up scoring
+    solutions against a function of how many bits were set.
+    """
+    from src.optimization.problems import MaxCutProblem
+
+    edges = problem.get("edges")
+    if not edges:
+        raise ValueError(
+            "This baseline solves Max-Cut and needs the graph. Supply "
+            "problem['edges'] as [(i, j), ...] and optionally "
+            "problem['weights']. A problem dict carrying only 'n_variables' "
+            "does not define an objective, and scoring against a substitute "
+            "is what made the previous baselines meaningless.")
+    edges = [tuple(e) for e in edges]
+    return MaxCutProblem(edges=edges, weights=problem.get("weights"))
+
+
+def _cut_value(partition, edges, weights) -> float:
+    """Weight of edges crossing the partition — the definition, applied."""
+    return float(sum(w for (i, j), w in zip(edges, weights)
+                     if partition[i] != partition[j]))
 
 
 class HybridBaselineService:
@@ -107,32 +135,96 @@ class HybridBaselineService:
         }
     
     async def _run_milp_baseline(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Mixed-integer programming baseline.
+        """Exact baseline via MILP (cvxpy, binary variables).
 
-        Previously reported `solver: "cplex_simulated"` alongside an
-        `upper_bound` and `lower_bound` drawn from np.random.normal — bounds
-        whose entire purpose is rigour, fabricated.
+        Previously reported `solver: "cplex_simulated"` with an `upper_bound`
+        and `lower_bound` drawn from np.random.normal — bounds whose entire
+        purpose is rigour, fabricated.
+
+        Now solves the real graph. The reported cut value is recomputed from the
+        returned partition rather than taken from the solver's objective, so the
+        two must agree; a mismatch means the formulation drifted from the
+        problem and is caught here rather than downstream.
         """
-        raise _not_implemented(
-            "the MILP/exact baseline",
-            "wire it to ClassicalMaxCutSolver / ClassicalPortfolioSolver in "
-            "src/optimization/classical.py, which solve the real problem with "
-            "cvxpy binary variables, and report the solver's own status, bounds "
-            "and measured wall-clock runtime")
+        from src.optimization.classical import ClassicalMaxCutSolver
+
+        mc = _as_maxcut(problem)
+        t0 = time.perf_counter()
+        result = ClassicalMaxCutSolver().solve(mc)
+        runtime = time.perf_counter() - t0
+
+        if result.get("status") != "optimal" or result.get("partition") is None:
+            raise RuntimeError(
+                f"Exact baseline did not solve: status={result.get('status')!r} "
+                f"{result.get('error', '')}".strip())
+
+        partition = [int(v) for v in result["partition"]]
+        achieved = _cut_value(partition, mc.edges, mc.weights)
+        reported = float(result["cut_value"])
+        if abs(achieved - reported) > 1e-6:
+            raise RuntimeError(
+                f"Solver objective {reported} does not match the cut its own "
+                f"partition achieves ({achieved}). The formulation and the "
+                "problem have diverged.")
+
+        return {
+            "solution": partition,
+            "objective_value": achieved,
+            "runtime_seconds": runtime,
+            "status": "optimal",
+            # This IS the optimum, so the gap is zero by definition — not an
+            # estimate, and not a number to invent.
+            "optimality_gap": 0.0,
+            "upper_bound": achieved,
+            "lower_bound": achieved,
+            "algorithm_details": {"solver": "cvxpy MILP (linearised Max-Cut)",
+                                  "exact": True},
+        }
 
     async def _run_heuristic_baseline(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Local-search heuristic baseline.
+        """Greedy local search on the real objective.
 
-        The search loop here was real, but it optimised `_evaluate_solution`,
-        which does not evaluate the problem — so the machinery was genuine and
-        the objective was fiction. Its reported runtime and optimality gap were
-        random regardless.
+        The search loop was always genuine; what it optimised was not. It now
+        hill-climbs the actual cut value, so the loop finally does what its
+        comments always claimed.
         """
-        raise _not_implemented(
-            "the heuristic baseline",
-            "give it a real objective (see solve_maxcut_greedy / "
-            "solve_portfolio_greedy in src/optimization/classical.py), then keep "
-            "the local-search loop and measure runtime with time.perf_counter")
+        mc = _as_maxcut(problem)
+        n = mc.n_nodes
+        max_iterations = int(kwargs.get("max_iterations", 1000))
+        rng = np.random.default_rng(kwargs.get("seed", 0))
+
+        t0 = time.perf_counter()
+        current = rng.integers(0, 2, size=n).tolist()
+        best_obj = _cut_value(current, mc.edges, mc.weights)
+        improved = True
+        sweeps = 0
+        # Deterministic full sweeps: flip whichever single node helps most,
+        # repeat until no single flip improves. Unlike random bit-flipping this
+        # terminates at a genuine local optimum, which is a property a baseline
+        # can be held to.
+        while improved and sweeps < max_iterations:
+            improved = False
+            sweeps += 1
+            for node in range(n):
+                current[node] ^= 1
+                cand = _cut_value(current, mc.edges, mc.weights)
+                if cand > best_obj + 1e-12:
+                    best_obj = cand
+                    improved = True
+                else:
+                    current[node] ^= 1
+        runtime = time.perf_counter() - t0
+
+        return {
+            "solution": current,
+            "objective_value": best_obj,
+            "runtime_seconds": runtime,
+            "iterations": sweeps,
+            "status": "local_optimum",
+            "algorithm_details": {"approach": "greedy_local_search",
+                                  "neighborhood": "single_node_flip",
+                                  "terminates_at": "no improving single flip"},
+        }
 
     async def _run_metaheuristic_baseline(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Metaheuristic (GA / simulated annealing) baseline."""

@@ -125,12 +125,48 @@ class ClassicalMaxCutSolver:
         # Decision variables (binary: 0 or 1 for each node)
         x = cp.Variable(n_nodes, boolean=True)
 
-        # Objective: maximize cut value
-        cut_value = 0
-        for (i, j), weight in zip(problem.edges, problem.weights):
-            cut_value += weight * (x[i] * (1 - x[j]) + x[j] * (1 - x[i]))
+        # The objective was written directly as
+        #     w_ij * (x_i (1 - x_j) + x_j (1 - x_i))
+        # which is bilinear, so cvxpy rejected the whole problem as non-DCP
+        # ("The objective is not DCP"). The solver then caught the exception,
+        # warned, and returned status 'error' — and the test suite passed
+        # anyway, because it asserts on shape and status rather than on a cut
+        # being found. This solver had therefore never solved anything.
+        #
+        # Standard MILP linearisation. For binary x, the indicator that edge
+        # (i, j) is cut is y_ij = x_i XOR x_j, which these four inequalities
+        # pin exactly when maximising a positive-weighted sum:
+        #
+        #     y_ij <= x_i + x_j          (both 0 -> not cut)
+        #     y_ij <= 2 - x_i - x_j      (both 1 -> not cut)
+        #     y_ij >= x_i - x_j          (differ -> cut)
+        #     y_ij >= x_j - x_i
+        #
+        # All linear, hence DCP-compliant, and exact rather than a relaxation.
+        n_edges = len(problem.edges)
+        y = cp.Variable(n_edges)
+        constraints = [y >= 0, y <= 1]
+        for k, (i, j) in enumerate(problem.edges):
+            constraints += [
+                y[k] <= x[i] + x[j],
+                y[k] <= 2 - x[i] - x[j],
+                y[k] >= x[i] - x[j],
+                y[k] >= x[j] - x[i],
+            ]
 
-        prob = cp.Problem(cp.Maximize(cut_value))
+        weights = np.asarray(problem.weights, dtype=float)
+        if np.any(weights < 0):
+            # With a negative weight the maximiser wants y_ij at its LOWER
+            # bound, and the two >= constraints no longer pin it to the XOR —
+            # the relaxation would report a cut value the partition does not
+            # achieve. Refuse rather than return a number that looks fine.
+            raise ValueError(
+                "ClassicalMaxCutSolver requires non-negative edge weights: the "
+                "linearisation above is exact only when the objective pushes "
+                "y_ij up. Got weights with minimum "
+                f"{weights.min()}.")
+
+        prob = cp.Problem(cp.Maximize(weights @ y), constraints)
 
         try:
             prob.solve()
