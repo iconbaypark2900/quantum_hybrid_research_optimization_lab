@@ -52,10 +52,27 @@ machine precision), least-squares linear extrapolation, and unitary folding with
 odd scale factors only. On an exponentially decaying signal it reduces the error
 against ground truth from 0.139 to 0.0027.
 
-What remains is the other half: producing measurements at amplified noise
-levels, which requires circuit execution, which requires `qiskit-aer` in `.venv`.
-Until then `_apply_zne` demands `noise_scaled_values` from the caller and refuses
-a single unamplified run.
+**It is now verified against Mitiq**, which the PRD names for exactly this job
+("Mitiq plugged into the execution path (ZNE, PEC, CDR) when enabled", §4.3;
+"Add Mitiq", §6 Phase 3). `tests/test_zne_vs_mitiq.py` compares the hand-written
+Richardson and linear extrapolators against `RichardsonFactory` and
+`LinearFactory` on identical inputs, and the folding against `fold_global`:
+agreement to machine precision (worst 2.66e-15), identical folded operation
+counts, and folded circuits equal to the original up to global phase.
+
+Writing that maths by hand when the spec named a library was a mistake — the
+same one, in miniature, as the deflated-Sharpe implementation inventing a
+formula the spec told it to take from a paper. The recovery is that Mitiq is now
+an oracle rather than a missed dependency: a deliberately introduced sign error
+in the Lagrange basis is caught by the cross-check independently of the maths
+tests.
+
+**PEC and CDR should use Mitiq rather than be hand-written.** It implements both,
+and there is no reason to repeat the mistake twice more.
+
+`qiskit-aer 0.17.2` and `mitiq 1.0.0` are now installed in `.venv`. What remains
+for end-to-end ZNE is wiring circuit execution to Aer so the amplified-noise
+measurements are produced rather than demanded from the caller.
 
 ## Known-broken, historical record
 
