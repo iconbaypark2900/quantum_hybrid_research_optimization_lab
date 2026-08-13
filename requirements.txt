@@ -14,6 +14,10 @@ dwave-ocean-sdk>=5.0.0
 
 # Quantum Error Mitigation
 mitiq>=0.16.0
+# Transitive: Mitiq's Qiskit<->Cirq conversion imports cirq.contrib.qasm_import,
+# which needs ply. Not pulled in automatically; without it fold_global raises
+# ModuleNotFoundError at the point of use rather than at install.
+ply>=3.11
 
 # Classical Optimization
 docplex>=2.24.222

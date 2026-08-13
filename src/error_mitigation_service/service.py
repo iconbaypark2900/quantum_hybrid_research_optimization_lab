@@ -91,6 +91,54 @@ class ErrorMitigationService:
                 "message": f"Error applying {technique} mitigation: {str(e)}"
             }
     
+    async def _measure_at_scale_factors(self, circuit, observable=None,
+                                        scale_factors=(1, 3, 5),
+                                        noise_level: float = 0.02,
+                                        shots: int = 8192) -> Dict[float, float]:
+        """Run the SAME logical circuit at amplified noise and measure it.
+
+        This is the half of ZNE that cannot be done with arithmetic: fold the
+        circuit to each odd scale factor (which leaves the ideal unitary
+        unchanged while multiplying the noisy operations), execute each one
+        under the same noise model, and record the observable.
+
+        Folding uses Mitiq's `fold_global`, which the PRD names and which
+        tests/test_zne_vs_mitiq.py confirms agrees with this repo's own
+        implementation.
+
+        `observable` maps a measured bitstring to a value; the default is the
+        parity (+1 for even weight, -1 for odd), the standard choice for a
+        Bell-type correlation.
+        """
+        from mitiq.zne.scaling import fold_global
+        from qiskit import QuantumCircuit
+
+        from ..execution_orchestrator_service.service import (
+            ExecutionOrchestratorService,
+        )
+
+        if isinstance(circuit, str):
+            circuit = QuantumCircuit.from_qasm_str(circuit)
+        if observable is None:
+            def observable(bitstring: str) -> float:
+                return 1.0 if bitstring.replace(" ", "").count("1") % 2 == 0 else -1.0
+
+        executor = ExecutionOrchestratorService()
+        out: Dict[float, float] = {}
+        for factor in scale_factors:
+            if factor % 2 == 0:
+                raise ValueError(
+                    f"scale factor {factor} is even; folding appends "
+                    "inverse/forward pairs, so only odd factors leave the ideal "
+                    "circuit unchanged")
+            folded = fold_global(circuit, scale_factor=float(factor))
+            result = await executor.execute_circuit(
+                f"zne_lambda_{factor}", shots=shots, circuit=folded,
+                noise_level=noise_level)
+            probs = result["result"]["probabilities"]
+            out[float(factor)] = sum(p * observable(state) for state, p in probs.items())
+        return out
+
     async def _apply_zne(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Zero-noise extrapolation from measurements at amplified noise levels.
 
@@ -109,6 +157,19 @@ class ErrorMitigationService:
         al. (2020) for unitary folding as digital noise scaling.
         """
         from .zne import extrapolate_to_zero_noise
+
+        # Closed loop: given a circuit and an observable, produce the
+        # amplified-noise measurements here rather than demanding them.
+        circuit = kwargs.get("circuit")
+        if circuit is not None and not raw_results.get("noise_scaled_values"):
+            raw_results = dict(raw_results)
+            raw_results["noise_scaled_values"] = await self._measure_at_scale_factors(
+                circuit,
+                observable=kwargs.get("observable"),
+                scale_factors=kwargs.get("scale_factors", (1, 3, 5)),
+                noise_level=kwargs.get("noise_level", 0.02),
+                shots=kwargs.get("shots", 8192),
+            )
 
         measured = raw_results.get("noise_scaled_values")
         if not measured:

@@ -27,8 +27,13 @@ class ExecutionOrchestratorService:
         self.port = port
         self.backends = {
             "simulator": {
-                "type": "qiskit",
-                "backend": "qasm_simulator",
+                "type": "qiskit-aer",
+                "backend": "aer_simulator",
+                "available": True
+            },
+            "aer_simulator": {
+                "type": "qiskit-aer",
+                "backend": "aer_simulator",
                 "available": True
             },
             "qasm_simulator": {
@@ -89,9 +94,13 @@ class ExecutionOrchestratorService:
                 "message": f"Circuit {circuit_id} executed successfully on {backend}"
             }
         
-        except NotImplementedError:
-            # Must propagate: swallowing it would turn a loud refusal back into
-            # a soft {"status": "failed"} dict, which is the pattern being removed.
+        except (NotImplementedError, ValueError, TypeError):
+            # Must propagate. Swallowing these turns a loud refusal back into a
+            # soft {"status": "failed"} dict — the pattern this file exists to
+            # remove. ValueError/TypeError were added after the first version
+            # of this guard let a missing-circuit error be silently downgraded:
+            # the caller got a dict saying "failed" and carried on, which is
+            # how a run ends up with no measurements and no error either.
             raise
         except Exception as e:
             logger.error(f"Execution failed for circuit {circuit_id} on {backend}: {e}")
@@ -105,30 +114,89 @@ class ExecutionOrchestratorService:
             }
     
     async def _simulate_quantum_execution(self, circuit_id: str, backend: str, shots: int, **kwargs) -> Dict[str, Any]:
-        """Execute a circuit and return measurement counts. NOT IMPLEMENTED.
+        """Execute a circuit on qiskit-aer and return real measurement counts.
 
-        This never simulated a circuit. It sampled counts from a binomial
-        distribution without reference to any circuit, gate or state vector,
-        then reported three things a caller reads as measurements:
+        Previously this sampled counts from a binomial with no circuit involved,
+        reported a random `execution_time`, and computed an objective from a
+        Hamming-weight formula labelled "Simple example". Now a circuit is
+        required, it is actually run, and the timing is measured.
 
-          - `average_objective_value`, computed from a made-up function of a
-            bitstring's Hamming weight (`hw*0.8 - hw^2*0.05`, labelled "Simple
-            example" in the source) rather than from the problem's objective;
-          - `execution_time`, drawn from np.random.uniform(0.1, 5.0);
-          - `backend_info` advertising 32 qubits of a backend that does not exist.
+        The circuit is supplied by the caller as `circuit=` — either a
+        `QuantumCircuit` or an OpenQASM string. A circuit_id alone is not
+        enough: nothing in this service stores circuits, and inventing one to
+        match an id is how the previous version ended up simulating nothing.
 
-        A simulator is a legitimate thing to run against — qiskit-aer and
-        PennyLane's default.qubit are real simulators and using one is normal
-        practice. The problem is not simulation; it is that no circuit was ever
-        involved, while the output was shaped to look like it had been.
+        Noise is optional and explicit. `noise_level=p` attaches a depolarising
+        model with probability p on 1- and 2-qubit gates, which is what makes
+        the zero-noise extrapolation path meaningful — without a noise model
+        every scale factor returns the same answer and there is nothing to
+        extrapolate.
         """
-        raise _not_implemented(
-            "circuit execution",
-            "run the circuit on a real simulator. qiskit-aer is pinned in "
-            "requirements.txt (>=0.14.0) but is NOT installed in .venv, so this "
-            "needs `./.venv/bin/pip install qiskit qiskit-aer` first. Then "
-            "measure wall-clock time with time.perf_counter, and compute the "
-            "objective from the problem definition rather than from bit counts")
+        import time
+
+        from qiskit import QuantumCircuit, transpile
+        from qiskit_aer import AerSimulator
+
+        circuit = kwargs.get("circuit")
+        if circuit is None:
+            raise ValueError(
+                f"execute_circuit needs the circuit itself, not just id "
+                f"{circuit_id!r}. Pass circuit=<QuantumCircuit or QASM string>. "
+                "This service stores no circuits, and fabricating one to match "
+                "an id is exactly the behaviour this replaced.")
+        if isinstance(circuit, str):
+            circuit = QuantumCircuit.from_qasm_str(circuit)
+        if not isinstance(circuit, QuantumCircuit):
+            raise TypeError(f"circuit must be a QuantumCircuit or QASM string, "
+                            f"got {type(circuit).__name__}")
+
+        noise_model = None
+        noise_level = kwargs.get("noise_level")
+        if noise_level:
+            from qiskit_aer.noise import NoiseModel, depolarizing_error
+            noise_model = NoiseModel()
+            noise_model.add_all_qubit_quantum_error(
+                depolarizing_error(float(noise_level), 1), ["u1", "u2", "u3", "rz", "sx", "x", "h"])
+            noise_model.add_all_qubit_quantum_error(
+                depolarizing_error(float(noise_level), 2), ["cx", "cz"])
+
+        sim = AerSimulator(noise_model=noise_model)
+        work = circuit.copy()
+        if not work.cregs:
+            work.measure_all()
+        # optimization_level=0 is REQUIRED, not a tuning choice. The default
+        # optimiser cancels adjacent inverse pairs, which is exactly what
+        # unitary folding inserts: measured here, a Bell circuit folded to
+        # lambda = 1, 3, 5, 7 transpiled to 5 operations and depth 3 in EVERY
+        # case. Folding did nothing, noise was never amplified, and ZNE was
+        # extrapolating three measurements of the same circuit — producing a
+        # confident "mitigated" number from no information at all.
+        #
+        # Level 0 still performs basis translation and layout, which is all
+        # that is needed to run.
+        compiled = transpile(work, sim, optimization_level=int(kwargs.get("optimization_level", 0)))
+
+        t0 = time.perf_counter()
+        job = sim.run(compiled, shots=shots)
+        counts = job.result().get_counts()
+        runtime = time.perf_counter() - t0
+
+        total = sum(counts.values())
+        probabilities = {state: c / total for state, c in counts.items()}
+
+        return {
+            "counts": dict(counts),
+            "probabilities": probabilities,
+            "shots_used": total,
+            "qubit_count": circuit.num_qubits,
+            "circuit_depth": circuit.depth(),
+            # Measured, not sampled.
+            "execution_time": runtime,
+            "noise_level": float(noise_level) if noise_level else 0.0,
+            "backend_info": {"backend_name": "aer_simulator",
+                             "backend_type": "simulator",
+                             "noise_model": bool(noise_model)},
+        }
 
     async def execute_batch(self, circuit_ids: list, backend: str = "simulator", shots: int = 1024) -> Dict[str, Any]:
         """Execute multiple circuits in batch"""

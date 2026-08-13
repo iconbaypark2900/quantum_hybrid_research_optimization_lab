@@ -70,9 +70,26 @@ tests.
 **PEC and CDR should use Mitiq rather than be hand-written.** It implements both,
 and there is no reason to repeat the mistake twice more.
 
-`qiskit-aer 0.17.2` and `mitiq 1.0.0` are now installed in `.venv`. What remains
-for end-to-end ZNE is wiring circuit execution to Aer so the amplified-noise
-measurements are produced rather than demanded from the caller.
+**The loop is now closed.** Circuit execution runs on `AerSimulator` with an
+optional depolarising noise model, and `_apply_zne` folds the circuit, executes
+each scale factor, and extrapolates — producing its own measurements rather than
+demanding them. On a Bell state (analytic parity `<ZZ> = +1`) under 3% noise it
+lands within 0.0007 of the true value against 0.029 unmitigated, roughly 40x
+closer.
+
+One correctness requirement, learned the hard way: **execution must transpile at
+`optimization_level=0`.** The default optimiser cancels adjacent inverse gate
+pairs, which is exactly what unitary folding inserts. With it enabled, a Bell
+circuit folded to lambda = 1, 3, 5, 7 transpiled to 5 operations and depth 3 in
+every case — folding did nothing, noise was never amplified, and ZNE reported a
+confident mitigated value extrapolated from three measurements of the same
+circuit.
+
+No amount of extrapolation maths could catch that: the values were
+self-consistent, in range, and the fit exact. Only the physical invariant does —
+a circuit with more noisy operations must measure worse — which is now asserted
+in `tests/test_zne_end_to_end.py` and verified to fail when the optimisation
+level is restored.
 
 ## Known-broken, historical record
 
