@@ -39,9 +39,9 @@ is in git history at `4971088`; `SCAFFOLDING.md` records what it faked and why i
 | `src/error_mitigation_service/service.py` | Closed-loop ZNE: folds, executes each scale factor, extrapolates |
 | `src/execution_orchestrator_service/service.py` | Aer execution with an optional depolarising noise model |
 | `src/hybrid_baseline_service/service.py` | MILP and heuristic baselines are real; metaheuristic and ML raise |
-| `src/optimization/qaoa.py` | Real circuits and Hamiltonians — **but untested and uncalled**. Promising, not trusted |
+| `src/optimization/qaoa.py` | Real circuits and Hamiltonians; recovers known optima and never exceeds the exact solver |
 
-**115 tests, all passing.** Verified on Python 3.11.16 against qiskit 2.5.2, mitiq 1.0.0
+**142 tests, all passing.** Verified on Python 3.11.16 against qiskit 2.5.2, mitiq 1.0.0
 and cvxpy 1.9.2, and on Python 3.10.21 against qiskit 2.4.2 and mitiq 0.47.0 — the pins in
 `pyproject.toml` are floors, and these are what actually resolved.
 
@@ -85,7 +85,7 @@ cd quantum_hybrid_research_optimization_lab
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt        # editable install; dependencies live in pyproject.toml
 
-python -m pytest                       # 115 tests
+python -m pytest                       # 142 tests
 python examples/qoptisolve_usage.py    # portfolio + Max-Cut, real output
 ```
 

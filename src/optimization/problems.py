@@ -47,6 +47,7 @@ class MaxCutProblem:
 
     edges: List[Tuple[int, int]]
     weights: List[float] = None
+    num_nodes: int = None
 
     def __post_init__(self):
         """Validate and set default weights."""
@@ -54,15 +55,33 @@ class MaxCutProblem:
             self.weights = [1.0] * len(self.edges)
         if len(self.edges) != len(self.weights):
             raise ValueError("Edges and weights must have same length")
+        if self.num_nodes is not None and self.num_nodes < self._min_nodes():
+            raise ValueError(
+                f"num_nodes={self.num_nodes} is smaller than the largest node "
+                f"index in edges ({self._min_nodes() - 1})")
+
+    def _min_nodes(self) -> int:
+        """Smallest node count consistent with the edge list."""
+        return max((max(e) for e in self.edges), default=-1) + 1
 
     @property
     def n_nodes(self) -> int:
-        """Number of nodes in the graph."""
-        nodes = set()
-        for edge in self.edges:
-            nodes.add(edge[0])
-            nodes.add(edge[1])
-        return len(nodes)
+        """Number of nodes in the graph.
+
+        This counted *distinct nodes appearing in an edge*, which silently
+        loses isolated nodes: create_sample_maxcut(n_nodes=6, edge_prob=0.2)
+        returned a problem reporting 4. Every consumer sizes itself from this
+        -- QAOA builds one qubit per node, the MILP solver one variable, the
+        brute-force oracle enumerates 2**n -- so all three quietly solved a
+        smaller problem than the caller asked for, and none of them could tell.
+
+        It is now the declared count when there is one, and otherwise the
+        smallest count consistent with the edge indices (max index + 1, which
+        also tolerates a gap in the middle). An isolated node is genuinely
+        unrecoverable from an edge list alone, so callers that care must
+        declare it -- create_sample_maxcut now does.
+        """
+        return self.num_nodes if self.num_nodes is not None else self._min_nodes()
 
     @property
     def adjacency_matrix(self) -> np.ndarray:
@@ -111,4 +130,6 @@ def create_sample_maxcut(n_nodes: int = 6, edge_prob: float = 0.5, seed: int = 4
                 edges.append((i, j))
                 weights.append(np.random.uniform(0.5, 2.0))
 
-    return MaxCutProblem(edges=edges, weights=weights)
+    # num_nodes is passed explicitly: a node can be isolated at this edge
+    # probability, and an edge list cannot express that it exists.
+    return MaxCutProblem(edges=edges, weights=weights, num_nodes=n_nodes)

@@ -20,8 +20,7 @@ is named after**, end to end, on real components, and reports only what it measu
 2. Solve it exactly with `ClassicalMaxCutSolver` (MILP, brute-force verified) and with the
    greedy heuristic. Both are real; both measure their own runtime.
 3. Convert the instance to QUBO with `src/optimization/canonical.py` (done).
-4. Build and run the QAOA circuit on Aer (`src/optimization/qaoa.py` — note it is
-   currently untested; `/qhrol-qaoa-coverage` covers that).
+4. Build and run the QAOA circuit on Aer (`src/optimization/qaoa.py`, now oracle-tested).
 5. Reduce the measured counts to an objective value under the cost Hamiltonian
    (`/qhrol-quantum-objective`), with and without ZNE.
 6. Report the comparison: exact optimum, heuristic value, quantum value mitigated and

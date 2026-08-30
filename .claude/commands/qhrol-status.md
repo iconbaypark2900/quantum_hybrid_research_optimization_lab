@@ -16,7 +16,7 @@ command that guesses would be the same failure in miniature.
 
 | Metric | Baseline |
 |---|---|
-| Tests | 115 passed, 0 failed, 0 skipped |
+| Tests | 142 passed, 0 failed, 0 skipped |
 | Verified against | Python 3.11.16 (qiskit 2.5.2, mitiq 1.0.0, cvxpy 1.9.2) **and** 3.10.21 (qiskit 2.4.2, mitiq 0.47.0) |
 | Tracked files | 35 (was 133 before the shrink) |
 | `src/` packages | 4 — `optimization`, `error_mitigation_service`, `execution_orchestrator_service`, `hybrid_baseline_service` |
@@ -26,7 +26,7 @@ command that guesses would be the same failure in miniature.
 | Quantum objective value | Never computed; `compute_optimality_gaps:271` defaults it to `0.0` |
 | Confidence interval | Hardcoded `±0.05` at `src/hybrid_baseline_service/service.py:303`, `# Simulated CI` |
 | Baselines that raise | metaheuristic, ML |
-| `src/optimization/qaoa.py` | Zero callers, zero tests |
+| `src/optimization/qaoa.py` | Oracle-tested (`tests/test_qaoa_oracle.py`); still no non-test caller |
 | CI | `.github/workflows/ci.yml` — test matrix on 3.10/3.11, plus a compile job pinned to 3.10 |
 | Manifest installable | Yes. `pyproject.toml` is the single source of truth; `requirements.txt` is an `-e .[test]` shim |
 | Python pin | `requires-python = ">=3.10,<3.12"`, enforced at install: 3.12+ fails naming the interpreter |
@@ -48,7 +48,7 @@ command that guesses would be the same failure in miniature.
      only at the optimum
    - whether `compute_optimality_gaps` still defaults the quantum objective to `0.0`
    - whether the `# Simulated CI` literal is still there
-   - whether anything imports or tests `src/optimization/qaoa.py`
+   - whether anything outside `tests/` calls `src/optimization/qaoa.py` yet
    - whether CI is still green on both matrix legs, and whether the compile job is still
      pinned below 3.12 — on 3.12+ it passes over exactly the construct it exists to catch
    - whether `pip install -r requirements.txt` still resolves on 3.10 and 3.11, and still

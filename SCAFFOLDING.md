@@ -93,6 +93,43 @@ level is restored.
 
 ## Known-broken, historical record
 
+**QAOA decoded every measurement to all-zeros** (fixed 2026-08-30). The only real
+quantum solver in the repository had never been run. The first time it was, on a
+4-cycle whose optimum is 4:
+
+```
+exact optimum : 4.0
+QAOA reported : cut_value 0.0, partition [0 0 0 0], convergence 5
+```
+
+The circuits were built as `QuantumCircuit(n, n)` and then measured with
+`measure_all()`, which adds a **second** classical register. The counts key was
+therefore `"1000 0000"` — the measured register, then the one never written.
+`_bits_from_counts_key` stripped the space and took the first `n` bits of the
+reversed string, which came from the empty register. So every sampled partition
+scored a cut of 0, the optimiser saw a flat landscape, and the result object came
+back complete, consistent and confident.
+
+Nothing about that is visible from outside: the dict has the right keys, the value
+is a float, `convergence` reports iterations, and `cut_value` genuinely matches the
+`partition` beside it — both were simply wrong together. Internal consistency is not
+evidence.
+
+`tests/test_qaoa_oracle.py` pins it with an oracle that needs no sampling at all:
+prepare a computational basis state, measure it, and require the decoder to return
+that exact pattern. Asymmetric patterns are used deliberately, because a reversed or
+truncated decoder round-trips `0000` and `1111` and fails only on the rest. Restoring
+the two-register construction fails 11 of the 27 tests.
+
+**`MaxCutProblem.n_nodes` silently dropped isolated nodes** (fixed alongside it). It
+counted distinct nodes appearing in an edge, so
+`create_sample_maxcut(n_nodes=6, edge_prob=0.2)` returned a problem reporting 4.
+Every consumer sizes itself from that — QAOA one qubit per node, the MILP solver one
+variable, the brute-force oracle `2**n` — so all three solved a smaller problem than
+the caller asked for, and none could tell. An isolated node cannot be recovered from
+an edge list, so it is now declared explicitly.
+
+
 **`ClassicalMaxCutSolver` did not solve** (fixed — kept here because the failure
 mode is instructive).
 Its objective was `x[i]*(1-x[j]) + x[j]*(1-x[i])`, which is bilinear, so cvxpy
@@ -141,9 +178,10 @@ what to trust:
   construction. Its minimum agrees with brute force and with the verified MILP solver,
   and it values every assignment correctly, not merely the optimum.
 - `src/optimization/qaoa.py` — real `QuantumCircuit` construction with genuine cost
-  and mixing Hamiltonians, driven by SPSA/COBYLA. **Caveat: nothing tests it and
-  nothing calls it.** It is the only real quantum solver here and it is unverified;
-  treat it as promising rather than trusted until it has an oracle.
+  and mixing Hamiltonians, driven by SPSA/COBYLA. Now verified: it recovers the known
+  optimum on hand-solvable graphs, never exceeds the exact solver, and its counts
+  decoder round-trips prepared basis states. See the historical record below for what
+  the first run of it found.
 - `src/execution_orchestrator_service/service.py` — real Aer execution, transpiled at
   `optimization_level=0` so folding survives.
 

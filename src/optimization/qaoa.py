@@ -91,7 +91,13 @@ class QAOA:
         """
         n_qubits = problem.n_assets
 
-        qc = QuantumCircuit(n_qubits, n_qubits)
+        # No explicit classical register: measure_all() adds its own ("meas").
+        # Declaring one here as well produced a circuit with 2n clbits, only n
+        # of which were ever written, and a counts key of the form "1000 0000".
+        # _bits_from_counts_key strips the space and takes the first n bits of
+        # the reversed string -- which was the never-written register. Every
+        # outcome decoded to all-zeros. See tests/test_qaoa_oracle.py.
+        qc = QuantumCircuit(n_qubits)
         qc.h(range(n_qubits))
 
         for layer in range(p):
@@ -118,7 +124,8 @@ class QAOA:
         """
         n_qubits = problem.n_nodes
 
-        qc = QuantumCircuit(n_qubits, n_qubits)
+        # See create_portfolio_circuit: measure_all() supplies the register.
+        qc = QuantumCircuit(n_qubits)
         qc.h(range(n_qubits))
 
         for layer in range(p):
@@ -161,12 +168,35 @@ class QAOA:
             qc.rx(2 * beta, i)
 
     def _bits_from_counts_key(self, key: str, num_qubits: int) -> np.ndarray:
-        """Convert a Qiskit counts key to a bit array with qubit index ordering."""
-        sanitized = key.replace(' ', '')
+        """Convert a Qiskit counts key to a bit array indexed by qubit.
+
+        Qiskit writes the key most-significant-qubit first, so it is reversed
+        here to give bits[i] == the measurement of qubit i.
+
+        Refuses a key carrying more than one classical register rather than
+        silently reading the wrong one. That is not hypothetical: these
+        circuits used to declare a classical register *and* call measure_all(),
+        which adds a second. The key was then "1000 0000", the space was
+        stripped, and the first n bits of the reversed string came from the
+        register that was never written -- so every outcome decoded to
+        all-zeros, and solve_maxcut reported cut_value 0.0 with a converged
+        optimiser on a graph whose optimum is 4.
+        """
+        if ' ' in key.strip():
+            raise ValueError(
+                f"counts key {key!r} spans more than one classical register. "
+                "Build the circuit with a single register (measure_all() adds "
+                "one) -- concatenating them here silently reads the wrong bits.")
+        sanitized = key.strip()
         if len(sanitized) < num_qubits:
             sanitized = sanitized.zfill(num_qubits)
+        if len(sanitized) != num_qubits:
+            raise ValueError(
+                f"counts key {key!r} has {len(sanitized)} bits, expected "
+                f"{num_qubits}")
         ordered = sanitized[::-1]
-        return np.fromiter((1 if ch == '1' else 0 for ch in ordered), dtype=int, count=num_qubits)
+        return np.fromiter((1 if ch == '1' else 0 for ch in ordered),
+                           dtype=int, count=num_qubits)
 
     def solve_portfolio(self, problem: 'PortfolioProblem', p: int = 1,
                         optimizer: str = 'SPSA', max_iter: int = 100) -> Dict:
