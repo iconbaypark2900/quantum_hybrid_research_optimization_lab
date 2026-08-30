@@ -19,6 +19,83 @@ def _not_implemented(what: str, needs: str) -> "NotImplementedError":
         f"To implement it: {needs}")
 
 
+def run_circuit(circuit=None, shots: int = 1024, **_kw):
+    """Execute a circuit on Aer. Synchronous, and the single execution path.
+
+    Extracted from `_simulate_quantum_execution` so the Mitiq PEC and CDR
+    paths can share it. Mitiq executors are synchronous, and duplicating the
+    noise model to satisfy them would put two definitions of "the noise" in
+    this repository -- the drift it keeps closing everywhere else.
+    """
+    _kw = dict(_kw, circuit=circuit)
+    import time
+
+    from qiskit import QuantumCircuit, transpile
+    from qiskit_aer import AerSimulator
+
+    circuit = _kw.get("circuit")
+    if circuit is None:
+        raise ValueError(
+            f"execute_circuit needs the circuit itself, not just id "
+            f"{_kw.get('circuit_id')!r}. Pass circuit=<QuantumCircuit or QASM string>. "
+            "This service stores no circuits, and fabricating one to match "
+            "an id is exactly the behaviour this replaced.")
+    if isinstance(circuit, str):
+        circuit = QuantumCircuit.from_qasm_str(circuit)
+    if not isinstance(circuit, QuantumCircuit):
+        raise TypeError(f"circuit must be a QuantumCircuit or QASM string, "
+                        f"got {type(circuit).__name__}")
+
+    noise_model = None
+    noise_level = _kw.get("noise_level")
+    if noise_level:
+        from qiskit_aer.noise import NoiseModel, depolarizing_error
+        noise_model = NoiseModel()
+        noise_model.add_all_qubit_quantum_error(
+            depolarizing_error(float(noise_level), 1), ["u1", "u2", "u3", "rz", "sx", "x", "h"])
+        noise_model.add_all_qubit_quantum_error(
+            depolarizing_error(float(noise_level), 2), ["cx", "cz"])
+
+    sim = AerSimulator(noise_model=noise_model)
+    work = circuit.copy()
+    if not work.cregs:
+        work.measure_all()
+    # optimization_level=0 is REQUIRED, not a tuning choice. The default
+    # optimiser cancels adjacent inverse pairs, which is exactly what
+    # unitary folding inserts: measured here, a Bell circuit folded to
+    # lambda = 1, 3, 5, 7 transpiled to 5 operations and depth 3 in EVERY
+    # case. Folding did nothing, noise was never amplified, and ZNE was
+    # extrapolating three measurements of the same circuit — producing a
+    # confident "mitigated" number from no information at all.
+    #
+    # Level 0 still performs basis translation and layout, which is all
+    # that is needed to run.
+    compiled = transpile(work, sim, optimization_level=int(_kw.get("optimization_level", 0)))
+
+    t0 = time.perf_counter()
+    job = sim.run(compiled, shots=shots)
+    counts = job.result().get_counts()
+    runtime = time.perf_counter() - t0
+
+    total = sum(counts.values())
+    probabilities = {state: c / total for state, c in counts.items()}
+
+    return {
+        "counts": dict(counts),
+        "probabilities": probabilities,
+        "shots_used": total,
+        "qubit_count": circuit.num_qubits,
+        "circuit_depth": circuit.depth(),
+        # Measured, not sampled.
+        "execution_time": runtime,
+        "noise_level": float(noise_level) if noise_level else 0.0,
+        "backend_info": {"backend_name": "aer_simulator",
+                         "backend_type": "simulator",
+                         "noise_model": bool(noise_model)},
+    }
+
+
+
 class ExecutionOrchestratorService:
     """Service for orchestrating quantum circuit execution on simulators and QPUs"""
     
@@ -132,72 +209,7 @@ class ExecutionOrchestratorService:
         every scale factor returns the same answer and there is nothing to
         extrapolate.
         """
-        import time
-
-        from qiskit import QuantumCircuit, transpile
-        from qiskit_aer import AerSimulator
-
-        circuit = kwargs.get("circuit")
-        if circuit is None:
-            raise ValueError(
-                f"execute_circuit needs the circuit itself, not just id "
-                f"{circuit_id!r}. Pass circuit=<QuantumCircuit or QASM string>. "
-                "This service stores no circuits, and fabricating one to match "
-                "an id is exactly the behaviour this replaced.")
-        if isinstance(circuit, str):
-            circuit = QuantumCircuit.from_qasm_str(circuit)
-        if not isinstance(circuit, QuantumCircuit):
-            raise TypeError(f"circuit must be a QuantumCircuit or QASM string, "
-                            f"got {type(circuit).__name__}")
-
-        noise_model = None
-        noise_level = kwargs.get("noise_level")
-        if noise_level:
-            from qiskit_aer.noise import NoiseModel, depolarizing_error
-            noise_model = NoiseModel()
-            noise_model.add_all_qubit_quantum_error(
-                depolarizing_error(float(noise_level), 1), ["u1", "u2", "u3", "rz", "sx", "x", "h"])
-            noise_model.add_all_qubit_quantum_error(
-                depolarizing_error(float(noise_level), 2), ["cx", "cz"])
-
-        sim = AerSimulator(noise_model=noise_model)
-        work = circuit.copy()
-        if not work.cregs:
-            work.measure_all()
-        # optimization_level=0 is REQUIRED, not a tuning choice. The default
-        # optimiser cancels adjacent inverse pairs, which is exactly what
-        # unitary folding inserts: measured here, a Bell circuit folded to
-        # lambda = 1, 3, 5, 7 transpiled to 5 operations and depth 3 in EVERY
-        # case. Folding did nothing, noise was never amplified, and ZNE was
-        # extrapolating three measurements of the same circuit — producing a
-        # confident "mitigated" number from no information at all.
-        #
-        # Level 0 still performs basis translation and layout, which is all
-        # that is needed to run.
-        compiled = transpile(work, sim, optimization_level=int(kwargs.get("optimization_level", 0)))
-
-        t0 = time.perf_counter()
-        job = sim.run(compiled, shots=shots)
-        counts = job.result().get_counts()
-        runtime = time.perf_counter() - t0
-
-        total = sum(counts.values())
-        probabilities = {state: c / total for state, c in counts.items()}
-
-        return {
-            "counts": dict(counts),
-            "probabilities": probabilities,
-            "shots_used": total,
-            "qubit_count": circuit.num_qubits,
-            "circuit_depth": circuit.depth(),
-            # Measured, not sampled.
-            "execution_time": runtime,
-            "noise_level": float(noise_level) if noise_level else 0.0,
-            "backend_info": {"backend_name": "aer_simulator",
-                             "backend_type": "simulator",
-                             "noise_model": bool(noise_model)},
-        }
-
+        return run_circuit(shots=shots, circuit_id=circuit_id, **kwargs)
     async def execute_batch(self, circuit_ids: list, backend: str = "simulator", shots: int = 1024) -> Dict[str, Any]:
         """Execute multiple circuits in batch"""
         logger.info(f"Batch executing {len(circuit_ids)} circuits on {backend}")

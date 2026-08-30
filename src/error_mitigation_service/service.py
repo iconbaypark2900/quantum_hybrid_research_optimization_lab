@@ -193,13 +193,155 @@ class ErrorMitigationService:
         mitigated["zne"] = out
         return mitigated
 
+    def _make_executor(self, observable, noise_level: float, shots: int):
+        """A Mitiq executor: circuit -> expectation of `observable` under noise.
+
+        Synchronous, because Mitiq's executors are. It calls the same
+        `run_circuit` the rest of this repository executes through, so the
+        noise model has one definition rather than two that can drift.
+        """
+        from ..execution_orchestrator_service.service import run_circuit
+
+        def executor(circuit) -> float:
+            result = run_circuit(circuit=circuit, shots=shots,
+                                 noise_level=noise_level)
+            return sum(p * observable(state)
+                       for state, p in result["probabilities"].items())
+
+        return executor
+
+    @staticmethod
+    def _strip_measurements(circuit):
+        """Mitiq rewrites the circuit; the executor is what measures it.
+
+        `run_circuit` appends `measure_all()` when a circuit carries no
+        classical register, so handing Mitiq an unmeasured circuit keeps the
+        measurement in exactly one place.
+        """
+        work = circuit.copy()
+        work.remove_final_measurements(inplace=True)
+        return work
+
+    @staticmethod
+    def _default_observable(observable):
+        if observable is not None:
+            return observable
+
+        def parity(bitstring: str) -> float:
+            return 1.0 if bitstring.replace(" ", "").count("1") % 2 == 0 else -1.0
+
+        return parity
+
     async def _apply_pec(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Probabilistic error cancellation. NOT IMPLEMENTED."""
-        raise _not_implemented("PEC error mitigation", "characterise the noise channel, build a quasi-probability decomposition of the ideal operation, and Monte-Carlo sample it with the sign correction — PEC needs a noise model, and there is none here")
+        """Probabilistic error cancellation, via Mitiq.
+
+        PEC needs a characterised noise channel: a quasi-probability
+        decomposition of each ideal operation into noisy ones, Monte-Carlo
+        sampled with the sign correction. Writing that by hand is the mistake
+        SCAFFOLDING.md records about the ZNE maths -- the spec named Mitiq and
+        it was hand-written anyway, then had to be verified against Mitiq
+        afterwards. There is no reason to repeat it twice more, so this is
+        Mitiq's implementation against the local depolarising model this
+        repository's executor actually applies.
+
+        The noise model is an assumption, not a measurement: PEC is exact only
+        insofar as the representations match the hardware. Here the executor
+        applies exactly the depolarising channel the representations assume, so
+        this is a self-consistent test of the method rather than a claim about
+        any real device.
+        """
+        import asyncio
+
+        from mitiq.pec import execute_with_pec
+        from mitiq.pec.representations.depolarizing import (
+            represent_operations_in_circuit_with_local_depolarizing_noise,
+        )
+
+        circuit = kwargs.get("circuit")
+        if circuit is None:
+            raise ValueError(
+                "PEC needs the circuit itself. Pass circuit=<QuantumCircuit>; "
+                "there is nothing to build a quasi-probability representation "
+                "from without it.")
+
+        noise_level = float(kwargs.get("noise_level", 0.02))
+        shots = int(kwargs.get("shots", 4096))
+        observable = self._default_observable(kwargs.get("observable"))
+        ideal = self._strip_measurements(circuit)
+
+        representations = represent_operations_in_circuit_with_local_depolarizing_noise(
+            ideal, noise_level)
+        executor = self._make_executor(observable, noise_level, shots)
+
+        unmitigated = await asyncio.to_thread(executor, ideal)
+        mitigated_value = await asyncio.to_thread(
+            execute_with_pec, ideal, executor,
+            representations=representations,
+            num_samples=int(kwargs.get("num_samples", 50)),
+            random_state=int(kwargs.get("random_state", 0)),
+        )
+
+        out = dict(raw_results)
+        out["average_objective_value"] = float(mitigated_value)
+        out["unmitigated_value"] = float(unmitigated)
+        out["mitigation_applied"] = "pec"
+        out["pec"] = {
+            "library": "mitiq.pec.execute_with_pec",
+            "noise_model": "local depolarising",
+            "noise_level": noise_level,
+            "num_representations": len(representations),
+            "shots_per_sample": shots,
+        }
+        return out
 
     async def _apply_cdr(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Clifford data regression. NOT IMPLEMENTED."""
-        raise _not_implemented("CDR error mitigation", "generate near-Clifford training circuits that are classically simulable, learn the map from noisy to exact expectation values on them, and apply it to the target circuit")
+        """Clifford data regression, via Mitiq.
+
+        CDR builds near-Clifford training circuits whose ideal expectation
+        values are classically simulable, measures them noisily, and fits the
+        map from noisy to ideal. It therefore needs two executors: the noisy
+        one, and a noiseless simulator for the training set.
+
+        Like PEC, this is Mitiq's implementation rather than a hand-written
+        one, for the reason SCAFFOLDING.md gives.
+        """
+        import asyncio
+
+        from mitiq.cdr import execute_with_cdr
+
+        circuit = kwargs.get("circuit")
+        if circuit is None:
+            raise ValueError(
+                "CDR needs the circuit itself. Pass circuit=<QuantumCircuit>; "
+                "the near-Clifford training set is built from it.")
+
+        noise_level = float(kwargs.get("noise_level", 0.02))
+        shots = int(kwargs.get("shots", 4096))
+        observable = self._default_observable(kwargs.get("observable"))
+        ideal = self._strip_measurements(circuit)
+
+        noisy = self._make_executor(observable, noise_level, shots)
+        noiseless = self._make_executor(observable, 0.0, shots)
+
+        unmitigated = await asyncio.to_thread(noisy, ideal)
+        mitigated_value = await asyncio.to_thread(
+            execute_with_cdr, ideal, noisy,
+            simulator=noiseless,
+            num_training_circuits=int(kwargs.get("num_training_circuits", 10)),
+            fraction_non_clifford=float(kwargs.get("fraction_non_clifford", 0.1)),
+        )
+
+        out = dict(raw_results)
+        out["average_objective_value"] = float(mitigated_value)
+        out["unmitigated_value"] = float(unmitigated)
+        out["mitigation_applied"] = "cdr"
+        out["cdr"] = {
+            "library": "mitiq.cdr.execute_with_cdr",
+            "noise_level": noise_level,
+            "num_training_circuits": int(kwargs.get("num_training_circuits", 10)),
+            "shots_per_circuit": shots,
+        }
+        return out
 
     async def _apply_vnle(self, raw_results: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Virtual/noise-less estimation. NOT IMPLEMENTED."""

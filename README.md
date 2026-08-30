@@ -37,12 +37,12 @@ is in git history at `4971088`; `SCAFFOLDING.md` records what it faked and why i
 | `src/optimization/canonical.py` | Max-Cut and portfolio to QUBO/Ising, verified by enumeration against two independent oracles |
 | `src/optimization/objective.py` | Measured counts reduced through the cost Hamiltonian to an expectation, with a real standard error |
 | `src/error_mitigation_service/zne.py` | Richardson and least-squares extrapolation, unitary folding — agrees with Mitiq to 2.66e-15 |
-| `src/error_mitigation_service/service.py` | Closed-loop ZNE: folds, executes each scale factor, extrapolates |
+| `src/error_mitigation_service/service.py` | Closed-loop ZNE: folds, executes each scale factor, extrapolates. CDR via Mitiq improves accuracy; PEC via Mitiq runs but is measured **not** to |
 | `src/execution_orchestrator_service/service.py` | Aer execution with an optional depolarising noise model |
-| `src/hybrid_baseline_service/service.py` | MILP and heuristic baselines are real; metaheuristic and ML raise |
+| `src/hybrid_baseline_service/service.py` | Exact MILP, greedy local search and simulated annealing, all real and timed |
 | `src/optimization/qaoa.py` | Max-Cut and portfolio circuits, both built from the QUBO's Ising form so circuit and objective cannot disagree; both recover the brute-force optimum |
 
-**216 tests, all passing.** Verified on Python 3.11.16 against qiskit 2.5.2, mitiq 1.0.0
+**227 tests, all passing.** Verified on Python 3.11.16 against qiskit 2.5.2, mitiq 1.0.0
 and cvxpy 1.9.2, and on Python 3.10.21 against qiskit 2.4.2 and mitiq 0.47.0 — the pins in
 `pyproject.toml` are floors, and these are what actually resolved.
 
@@ -86,7 +86,7 @@ cd quantum_hybrid_research_optimization_lab
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt        # editable install; dependencies live in pyproject.toml
 
-python -m pytest                       # 216 tests
+python -m pytest                       # 227 tests
 python examples/qoptisolve_usage.py    # portfolio + Max-Cut, real output
 python benchmark.py                    # the quantum-vs-classical comparison
 ```
@@ -101,10 +101,16 @@ with its provenance — seed, shots, depth, backend, noise model.
 to make it real, and which fabrications have since been closed. It is written to be read
 before trusting anything here.
 
-Still open: PEC, CDR and VNLE raise rather than pretend, as do the metaheuristic and
-machine-learning baselines. QAOA runs at fixed depth with a simple optimiser and is not
-competitive with the exact solver — the benchmark reports that plainly rather than
-selecting a framing where it wins.
+Still open: VNLE raises rather than pretends. PEC is implemented via Mitiq and **does not
+improve accuracy here** — its representations assume one depolarising convention while
+Aer applies another, and no single scalar matches both one- and two-qubit operations; the
+bias is ~0.07 on a Bell state at 5% noise and does not shrink with more samples, only the
+variance does. `tests/test_pec_cdr.py` asserts that, rather than an improvement that is
+absent.
+
+QAOA is not competitive with the exact solver: approximation ratio ~0.76 at p=3, rising
+modestly with depth (0.759 → 0.785 from p=2 to p=6). The benchmark reports that plainly
+rather than selecting a framing in which it wins.
 
 ## Drift detection
 

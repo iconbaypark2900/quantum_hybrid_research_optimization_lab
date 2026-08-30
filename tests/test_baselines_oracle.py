@@ -145,11 +145,76 @@ def test_problem_without_a_graph_is_refused():
             {"problem_id": "x", "n_variables": 10}, "milp"))
 
 
-def test_unimplemented_baselines_raise_rather_than_fabricate():
+def test_a_baseline_that_does_not_exist_is_refused_not_invented():
+    """`machine_learning` was retired rather than left raising.
+
+    It reported `model_type: "feedforward_nn_simulated"` over no model.
+    SCAFFOLDING.md gave the choice as "train a model, or delete the baseline";
+    there is no meaningful supervised baseline for a single Max-Cut instance,
+    so it was deleted. Asking for it now names what exists instead of
+    returning something.
+    """
     from src.hybrid_baseline_service.service import HybridBaselineService
 
     svc = HybridBaselineService()
     spec = {"problem_id": "t", "edges": [[0, 1], [1, 2]]}
-    for algorithm in ("metaheuristics", "machine_learning"):
-        with pytest.raises(NotImplementedError):
+    for algorithm in ("machine_learning", "quantum_annealing", ""):
+        with pytest.raises(ValueError, match="not available"):
             asyncio.run(svc.run_baseline(spec, algorithm))
+
+
+@pytest.mark.parametrize("n_nodes", [6, 8])
+def test_the_metaheuristic_finds_a_real_cut(n_nodes):
+    """Simulated annealing, pinned against brute force.
+
+    It must never exceed the optimum, and its reported value must match the
+    cut its own assignment achieves -- the check that caught the MILP
+    formulation drifting from the problem.
+    """
+    from src.hybrid_baseline_service.service import HybridBaselineService
+
+    problem = create_sample_maxcut(n_nodes=n_nodes, edge_prob=0.6)
+    spec = {"edges": problem.edges, "weights": problem.weights,
+            "n_nodes": problem.n_nodes}
+    optimum = brute_force_maxcut(problem)
+
+    out = asyncio.run(HybridBaselineService().run_baseline(
+        spec, "metaheuristics", seed=1))["result"]
+
+    assert out["objective_value"] <= optimum + 1e-9
+    assert out["objective_value"] == pytest.approx(
+        cut_value(out["solution"], problem.edges, problem.weights))
+    assert out["runtime_seconds"] > 0
+    assert out["accepted_moves"] > 0
+
+
+def test_the_metaheuristic_is_reproducible_from_its_seed():
+    from src.hybrid_baseline_service.service import HybridBaselineService
+
+    problem = create_sample_maxcut(n_nodes=7, edge_prob=0.6)
+    spec = {"edges": problem.edges, "weights": problem.weights,
+            "n_nodes": problem.n_nodes}
+    svc = HybridBaselineService()
+    a = asyncio.run(svc.run_baseline(spec, "metaheuristics", seed=5))["result"]
+    b = asyncio.run(svc.run_baseline(spec, "metaheuristics", seed=5))["result"]
+    assert a["solution"] == b["solution"]
+
+
+def test_annealing_is_not_just_greedy_under_another_name():
+    """It must accept worsening moves; otherwise it is the greedy baseline.
+
+    Two baselines that search identically, reported separately, would overstate
+    how much independent evidence the comparison carries.
+    """
+    from src.hybrid_baseline_service.service import HybridBaselineService
+
+    problem = create_sample_maxcut(n_nodes=8, edge_prob=0.5)
+    spec = {"edges": problem.edges, "weights": problem.weights,
+            "n_nodes": problem.n_nodes}
+    out = asyncio.run(HybridBaselineService().run_baseline(
+        spec, "metaheuristics", seed=2, sweeps=100))["result"]
+
+    n_nodes, sweeps = problem.n_nodes, out["sweeps"]
+    # A pure hill-climber accepts only improving flips, which on a converged
+    # run is a small fraction of the n*sweeps proposals.
+    assert out["accepted_moves"] > n_nodes * sweeps * 0.05
