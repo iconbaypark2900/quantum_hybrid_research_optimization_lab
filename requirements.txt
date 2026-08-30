@@ -1,86 +1,12 @@
-# Core dependencies
-numpy>=1.21.0
-pandas>=1.3.0
-asyncio-mqtt>=0.11.0
+# Dependencies live in pyproject.toml, which is the single source of truth.
+#
+# This file is a shim so that `pip install -r requirements.txt` keeps working.
+# It deliberately does not restate the dependency list: an earlier version of
+# this repository carried two manifests that disagreed, and the divergence
+# between them was the largest set of claims the code did not back.
+#
+# Installing this way also enforces requires-python (>=3.10,<3.12), so an
+# attempt on 3.12+ fails at install with a message naming the interpreter
+# rather than producing six confusing ZNE failures later.
 
-# Quantum Computing Libraries
-qiskit>=0.45.0
-qiskit-aer>=0.14.0
-qiskit-algorithms>=0.2.0
-qiskit-machine-learning>=0.6.0
-qiskit-optimization>=0.5.0
-pyquil>=3.0.0
-dwave-ocean-sdk>=5.0.0
-
-# Quantum Error Mitigation
-mitiq>=0.16.0
-# Transitive: Mitiq's Qiskit<->Cirq conversion imports cirq.contrib.qasm_import,
-# which needs ply. Not pulled in automatically; without it fold_global raises
-# ModuleNotFoundError at the point of use rather than at install.
-ply>=3.11
-
-# Classical Optimization
-docplex>=2.24.222
-cplex>=22.1.1.0  # Optional: for commercial solvers
-gurobipy>=10.0.0  # Optional: for commercial solvers
-cvxpy>=1.3.0
-scipy>=1.10.0
-
-# Machine Learning & Hyperparameter Optimization
-optuna>=3.0.0
-deap>=1.3.0  # For evolutionary algorithms
-scikit-learn>=1.1.0
-torch>=1.12.0
-tensorflow>=2.10.0
-
-# NLP and Text Processing
-sentence-transformers>=2.2.0
-transformers>=4.20.0
-spacy>=3.4.0
-nltk>=3.7
-
-# Data Processing
-pyarrow>=8.0.0
-polars>=0.18.0
-
-# API & Web Framework
-fastapi>=0.85.0
-uvicorn>=0.18.0
-httpx>=0.23.0
-
-# Configuration & Logging
-pydantic>=1.10.0
-python-dotenv>=0.19.0
-structlog>=22.1.0
-
-# Visualization
-matplotlib>=3.5.0
-seaborn>=0.11.0
-plotly>=5.0.0
-
-# Network Analysis
-networkx>=2.8.0
-
-# Security & Privacy
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.0
-microsoft-presidio>=2.2.0  # For PHI detection (if needed for medical applications)
-
-# Experiment Tracking & Observability
-mlflow>=2.0.0
-langfuse>=1.0.0
-prometheus-client>=0.15.0
-
-# Vector Database Clients
-qdrant-client>=1.1.4
-opensearch-py>=2.2.0
-
-# Graph Database Client
-neo4j>=5.0.0
-
-# Utilities
-pydantic-settings>=2.0.0
-python-multipart>=0.0.6
-aiohttp>=3.8.0
-requests>=2.28.0
-faiss-cpu>=1.7.0
+-e .[test]

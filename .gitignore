@@ -10,3 +10,7 @@ __pycache__/
 data/
 models/
 notebooks/.ipynb_checkpoints/
+*.egg-info/
+*.egg
+build/
+dist/

@@ -40,7 +40,9 @@ is in git history at `4971088`; `SCAFFOLDING.md` records what it faked and why i
 | `src/hybrid_baseline_service/service.py` | MILP and heuristic baselines are real; metaheuristic and ML raise |
 | `src/optimization/qaoa.py` | Real circuits and Hamiltonians — **but untested and uncalled**. Promising, not trusted |
 
-**79 tests, all passing**, against qiskit 2.5.2, mitiq 1.0.0 and cvxpy 1.9.2.
+**83 tests, all passing.** Verified on Python 3.11.16 against qiskit 2.5.2, mitiq 1.0.0
+and cvxpy 1.9.2, and on Python 3.10.21 against qiskit 2.4.2 and mitiq 0.47.0 — the pins in
+`pyproject.toml` are floors, and these are what actually resolved.
 
 Two results worth quoting, because they are measurements rather than claims. On an
 exponentially decaying signal, extrapolation reduces error against ground truth from 0.139
@@ -60,20 +62,30 @@ verified to fail when the optimisation level is restored.
 
 ### Prerequisites
 
-**Python 3.11.** Not 3.9, and not 3.12+. `mitiq` cannot be installed on 3.12 or later; on
-those versions pip silently falls back to a `0.0.0` placeholder that imports, reports a
-version, and has no `mitiq.zne`. Six tests then fail in a way that looks like broken code
-rather than a broken environment.
+**Python 3.10 or 3.11.** Both are verified in CI; they resolve different qiskit and mitiq
+releases and the suite passes on each. 3.12 and later will not work, and this is enforced
+at install time rather than documented and hoped for:
+
+```
+ERROR: Package 'quantum-hybrid-research-optimization-lab' requires a different Python:
+3.13.13 not in '<3.12,>=3.10'
+```
+
+The reason is `mitiq`. On 3.12+ every real release fails to build, and pip does not stop —
+it falls back to a placeholder `mitiq 0.0.0` that installs cleanly, imports, reports a
+version, and contains no `mitiq.zne`. Six tests then fail in a way that reads as broken
+code rather than a broken environment. `tests/test_environment.py` says so in one line
+instead.
 
 ```bash
 git clone https://github.com/iconbaypark2900/quantum_hybrid_research_optimization_lab.git
 cd quantum_hybrid_research_optimization_lab
 
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt        # editable install; dependencies live in pyproject.toml
 
-python -m pytest                                    # 79 tests
-PYTHONPATH=. python examples/qoptisolve_usage.py    # portfolio + Max-Cut, real output
+python -m pytest                       # 83 tests
+python examples/qoptisolve_usage.py    # portfolio + Max-Cut, real output
 ```
 
 There is no application to start. This is a library and its tests.
