@@ -34,13 +34,14 @@ is in git history at `4971088`; `SCAFFOLDING.md` records what it faked and why i
 |---|---|
 | `src/optimization/problems.py` | Real Max-Cut and portfolio structures, seeded and deterministic |
 | `src/optimization/classical.py` | Exact Max-Cut via MILP linearisation, verified against brute force for n = 4..8; real greedy heuristics |
+| `src/optimization/canonical.py` | Max-Cut and portfolio to QUBO/Ising, verified by enumeration against two independent oracles |
 | `src/error_mitigation_service/zne.py` | Richardson and least-squares extrapolation, unitary folding — agrees with Mitiq to 2.66e-15 |
 | `src/error_mitigation_service/service.py` | Closed-loop ZNE: folds, executes each scale factor, extrapolates |
 | `src/execution_orchestrator_service/service.py` | Aer execution with an optional depolarising noise model |
 | `src/hybrid_baseline_service/service.py` | MILP and heuristic baselines are real; metaheuristic and ML raise |
 | `src/optimization/qaoa.py` | Real circuits and Hamiltonians — **but untested and uncalled**. Promising, not trusted |
 
-**83 tests, all passing.** Verified on Python 3.11.16 against qiskit 2.5.2, mitiq 1.0.0
+**115 tests, all passing.** Verified on Python 3.11.16 against qiskit 2.5.2, mitiq 1.0.0
 and cvxpy 1.9.2, and on Python 3.10.21 against qiskit 2.4.2 and mitiq 0.47.0 — the pins in
 `pyproject.toml` are floors, and these are what actually resolved.
 
@@ -84,7 +85,7 @@ cd quantum_hybrid_research_optimization_lab
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt        # editable install; dependencies live in pyproject.toml
 
-python -m pytest                       # 83 tests
+python -m pytest                       # 115 tests
 python examples/qoptisolve_usage.py    # portfolio + Max-Cut, real output
 ```
 
@@ -96,9 +97,11 @@ There is no application to start. This is a library and its tests.
 to make it real, and which fabrications have since been closed. It is written to be read
 before trusting anything here.
 
-The largest gap: **nothing converts a problem to canonical QUBO/Ising form**, so nothing
-produces a quantum objective value. Until that exists there is no quantum-vs-classical
-comparison to make, only a classical solver with an oracle over it.
+The largest gap: **nothing reduces a measured bitstring distribution to an objective
+value**, so there is still no quantum number to compare. The problem now converts to QUBO
+correctly; what is missing is the step from Aer counts, through the cost Hamiltonian, to a
+scalar. Until that exists there is no quantum-vs-classical comparison to make, only a
+classical solver with an oracle over it.
 
 ## What is queued
 

@@ -45,9 +45,11 @@ wrong observable, not broken.
 
 ## Steps
 
-1. Implement a cost-Hamiltonian observable: given a QUBO (from `/qhrol-canonical-form`)
-   and a measured bitstring, return the objective value. For Max-Cut that is the cut
-   weight. Put it beside the QUBO builder so the two cannot drift.
+1. Implement a cost-Hamiltonian observable: given a QUBO and a measured bitstring, return
+   the objective value. **`src/optimization/canonical.py` already does the hard half** —
+   `QUBO.energy(bits)` is the objective and `QUBO.cut_value(bits)` is its Max-Cut reading,
+   both verified on every assignment for n = 4..8. What is missing is the reduction from a
+   *distribution* of bitstrings to a scalar. Put it beside the QUBO builder.
 2. Reduce a counts dict to an expectation value under that observable — a shot-weighted
    mean, with the shot count carried through so uncertainty can be computed later.
 3. Have the execution orchestrator (or a thin layer above it) return `objective_value` in
@@ -76,9 +78,10 @@ wrong observable, not broken.
 
 ## Ordering
 
-After `/qhrol-canonical-form` (it needs the QUBO) and before `/qhrol-benchmark-driver`
-and `/qhrol-honest-comparison`, both of which report the number this produces. A driver
-built before this lands would compute a confident optimality gap against `0.0`.
+`/qhrol-canonical-form` is done, so this is unblocked and is the next thing to build.
+Before `/qhrol-benchmark-driver` and `/qhrol-honest-comparison`, both of which report the
+number this produces — a driver built before it lands would compute a confident optimality
+gap against `0.0`.
 
 ## Commit convention
 

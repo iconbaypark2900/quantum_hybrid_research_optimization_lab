@@ -16,13 +16,13 @@ command that guesses would be the same failure in miniature.
 
 | Metric | Baseline |
 |---|---|
-| Tests | 83 passed, 0 failed, 0 skipped |
+| Tests | 115 passed, 0 failed, 0 skipped |
 | Verified against | Python 3.11.16 (qiskit 2.5.2, mitiq 1.0.0, cvxpy 1.9.2) **and** 3.10.21 (qiskit 2.4.2, mitiq 0.47.0) |
 | Tracked files | 35 (was 133 before the shrink) |
 | `src/` packages | 4 — `optimization`, `error_mitigation_service`, `execution_orchestrator_service`, `hybrid_baseline_service` |
 | Entry points | None. A library, its tests, and `examples/qoptisolve_usage.py` (runs from any cwd since the editable install) |
 | `compileall` on 3.11 | Clean |
-| Canonical form (QUBO/Ising) | **Not implemented anywhere** — the blocker for every quantum result |
+| Canonical form (QUBO/Ising) | `src/optimization/canonical.py` — done, oracle-verified for n = 4..8 |
 | Quantum objective value | Never computed; `compute_optimality_gaps:271` defaults it to `0.0` |
 | Confidence interval | Hardcoded `±0.05` at `src/hybrid_baseline_service/service.py:303`, `# Simulated CI` |
 | Baselines that raise | metaheuristic, ML |
@@ -44,7 +44,8 @@ command that guesses would be the same failure in miniature.
    install is missing.
 4. Check each open claim from the table:
    - `grep -rn "raise NotImplementedError" src/`
-   - whether anything converts a problem to QUBO or Ising form
+   - whether the QUBO conversion still agrees with brute force on every assignment, not
+     only at the optimum
    - whether `compute_optimality_gaps` still defaults the quantum objective to `0.0`
    - whether the `# Simulated CI` literal is still there
    - whether anything imports or tests `src/optimization/qaoa.py`

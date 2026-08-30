@@ -19,7 +19,7 @@ is named after**, end to end, on real components, and reports only what it measu
    reproducible, with the seed reported.
 2. Solve it exactly with `ClassicalMaxCutSolver` (MILP, brute-force verified) and with the
    greedy heuristic. Both are real; both measure their own runtime.
-3. Convert the instance to QUBO (`/qhrol-canonical-form`).
+3. Convert the instance to QUBO with `src/optimization/canonical.py` (done).
 4. Build and run the QAOA circuit on Aer (`src/optimization/qaoa.py` — note it is
    currently untested; `/qhrol-qaoa-coverage` covers that).
 5. Reduce the measured counts to an objective value under the cost Hamiltonian
@@ -67,12 +67,12 @@ has already made once.
 - One command produces a comparison table with real numbers on both sides and its
   provenance.
 - `grep -n "mock\|placeholder\|Example value" benchmark.py` returns nothing.
-- Removing the QUBO conversion makes it raise, not report a gap of zero.
+- Removing the quantum objective makes it raise, not report a gap of zero.
 - Full suite green.
 
 ## Ordering
 
-Last of the science chain: after `/qhrol-canonical-form`, `/qhrol-quantum-objective` and
+Last of the science chain: after `/qhrol-quantum-objective` and
 `/qhrol-honest-comparison`. It is the thing that makes them visible, so build it only once
 the numbers underneath it are real.
 

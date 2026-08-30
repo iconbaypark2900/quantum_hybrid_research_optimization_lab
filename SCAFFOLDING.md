@@ -30,7 +30,7 @@ unfalsifiable one, which is the specific failure the research-integrity work in
 | ~~`src/execution_orchestrator_service/service.py`~~ | sampled counts from a binomial with no circuit involved; `execution_time` random; `average_objective_value` from a Hamming-weight formula labelled "Simple example"; advertised a 32-qubit backend that does not exist | **DONE.** Executes on `AerSimulator` with an optional depolarising noise model; refuses a missing circuit rather than downgrading |
 | ~~`src/error_mitigation_service/service.py` — ZNE~~ | as described below | **DONE.** Richardson and least-squares linear fits plus unitary folding (`zne.py`), verified against Mitiq; the loop is closed — it produces its own measurements at ≥2 noise factors and refuses a single unamplified run |
 | ” — PEC, CDR, VNLE | same shape: plausible output, technique never performed | PEC needs a characterised noise model; CDR needs near-Clifford training circuits |
-| canonical form (QUBO/Ising) | returned an **empty** QUBO (`linear_terms: {}`, `quadratic_terms: {}`) while logging success and reporting `method: "automatic_conversion"` | **Nothing implements this at all now.** `src/problem_definition_service/` was deleted in the shrink; the conversion belongs in `src/optimization/`, beside the `MaxCutProblem` edge weights and portfolio covariance it must read. This is the blocker for every quantum result |
+| ~~canonical form (QUBO/Ising)~~ | returned an **empty** QUBO (`linear_terms: {}`, `quadratic_terms: {}`) while logging success and reporting `method: "automatic_conversion"` | **DONE.** `src/optimization/canonical.py`. Max-Cut and portfolio to QUBO, with Ising by a single documented substitution. Verified by enumeration against brute force and against the MILP solver for n = 4..8, and on every assignment rather than only the optimum |
 
 ## Fixed since this file was written
 
@@ -137,6 +137,9 @@ what to trust:
   `solve_portfolio_greedy` are real greedy heuristics.
 - `src/error_mitigation_service/zne.py` — real Richardson and linear
   extrapolation, and unitary folding.
+- `src/optimization/canonical.py` — QUBO and Ising conversion, a minimisation by
+  construction. Its minimum agrees with brute force and with the verified MILP solver,
+  and it values every assignment correctly, not merely the optimum.
 - `src/optimization/qaoa.py` — real `QuantumCircuit` construction with genuine cost
   and mixing Hamiltonians, driven by SPSA/COBYLA. **Caveat: nothing tests it and
   nothing calls it.** It is the only real quantum solver here and it is unverified;
