@@ -47,6 +47,7 @@ async def run(n_nodes: int, edge_prob: float, seed: int, depth: int,
             "n_nodes": problem.n_nodes}
     exact = await baselines.run_baseline(spec, "milp")
     heuristic = await baselines.run_baseline(spec, "heuristics", seed=seed)
+    annealed = await baselines.run_baseline(spec, "metaheuristics", seed=seed)
 
     # --- quantum ----------------------------------------------------------
     qaoa = QAOA(shots=shots)
@@ -57,7 +58,8 @@ async def run(n_nodes: int, edge_prob: float, seed: int, depth: int,
     quantum = objective_from_counts(
         qaoa_result["counts"], qubo,
         seed=seed, depth=depth, shots=shots, backend=qaoa.backend_name,
-        optimizer_iterations=max_iter, noise_model="none (ideal Aer)",
+        optimizer_iterations=max_iter, optimizer=qaoa_result["optimizer"],
+        warm_start=qaoa_result["warm_start"], noise_model="none (ideal Aer)",
         mitigation="none", runtime_seconds=qaoa_seconds,
     )
 
@@ -78,7 +80,7 @@ async def run(n_nodes: int, edge_prob: float, seed: int, depth: int,
 
     # --- compare -----------------------------------------------------------
     comparison = await baselines.compute_optimality_gaps(
-        quantum, [exact, heuristic])
+        quantum, [exact, heuristic, annealed])
 
     return {
         "problem": {"n_nodes": problem.n_nodes, "n_edges": len(problem.edges),
@@ -88,6 +90,8 @@ async def run(n_nodes: int, edge_prob: float, seed: int, depth: int,
                            "runtime_seconds": exact["result"]["runtime_seconds"]},
             "greedy": {"objective_value": heuristic["result"]["objective_value"],
                        "runtime_seconds": heuristic["result"]["runtime_seconds"]},
+            "annealing": {"objective_value": annealed["result"]["objective_value"],
+                          "runtime_seconds": annealed["result"]["runtime_seconds"]},
         },
         "quantum": quantum,
         "zne": {
@@ -124,7 +128,9 @@ def main() -> int:
     print(f"\nexact optimum      {report['classical']['exact_milp']['objective_value']:.4f}"
           f"   (MILP, brute-force verified)"
           f"\ngreedy heuristic   {report['classical']['greedy']['objective_value']:.4f}"
+          f"\nannealing          {report['classical']['annealing']['objective_value']:.4f}"
           f"\nQAOA expectation   {q['objective_value']:.4f} +/- {q['standard_error']:.4f}"
+          f"   ratio {q['objective_value'] / report['classical']['exact_milp']['objective_value']:.3f}"
           f"   ({q['shots']} shots, seed {q['provenance']['seed']}, p={q['provenance']['depth']})"
           f"\nQAOA best sample   {q['best_sampled_value']:.4f}"
           f"   (max over shots -- improves with shots regardless of circuit quality)"

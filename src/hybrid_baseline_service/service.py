@@ -97,15 +97,15 @@ class HybridBaselineService:
             'milp': self._run_milp_baseline,
             'heuristics': self._run_heuristic_baseline,
             'metaheuristics': self._run_metaheuristic_baseline,
-            'machine_learning': self._run_ml_baseline,
         }
 
         key = algorithm.lower()
         if key not in dispatch:
             raise ValueError(
                 f"Algorithm {algorithm!r} is not available. Defined baselines: "
-                f"{', '.join(sorted(dispatch))}. Note that all of them currently "
-                "raise NotImplementedError — see this module's docstring.")
+                f"{', '.join(sorted(dispatch))}. The learned-heuristic baseline "
+                "was removed rather than left raising: see this module's "
+                "docstring.")
 
         result = await dispatch[key](problem, **kwargs)
 
@@ -227,22 +227,75 @@ class HybridBaselineService:
         }
 
     async def _run_metaheuristic_baseline(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Metaheuristic (GA / simulated annealing) baseline."""
-        raise _not_implemented(
-            "the metaheuristic baseline",
-            "run a real GA or annealer against a real objective function; the "
-            "population mechanics in src/hpo_evolution_service/service.py are "
-            "genuine and can be reused, but they need something true to optimise")
+        """Simulated annealing on the real cut value.
 
-    async def _run_ml_baseline(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-        """Learned-heuristic baseline.
+        A genuine metaheuristic, and deliberately a different search from the
+        greedy baseline beside it: greedy stops at the first local optimum a
+        single-flip neighbourhood allows, while annealing accepts worsening
+        moves with probability exp(-delta/T) and can leave one. Reporting both
+        is informative; reporting two greedy searches under different names
+        would not be.
 
-        Reported `model_type: "feedforward_nn_simulated"`. There is no model.
+        Seeded, so a reported number is reproducible, and timed by the clock
+        rather than estimated.
         """
-        raise _not_implemented(
-            "the ML baseline",
-            "train an actual model, or delete this baseline — an unimplemented "
-            "learned heuristic is not a baseline anything should be compared to")
+        mc = _as_maxcut(problem)
+        n = mc.n_nodes
+        rng = np.random.default_rng(kwargs.get("seed", 0))
+        sweeps = int(kwargs.get("sweeps", 500))
+        t_initial = float(kwargs.get("t_initial", 2.0))
+        t_final = float(kwargs.get("t_final", 0.01))
+        if not 0 < t_final < t_initial:
+            raise ValueError("require 0 < t_final < t_initial")
+
+        t0 = time.perf_counter()
+        current = rng.integers(0, 2, size=n).tolist()
+        current_obj = _cut_value(current, mc.edges, mc.weights)
+        best, best_obj = list(current), current_obj
+
+        # Geometric cooling from t_initial to t_final over the sweep budget.
+        cooling = (t_final / t_initial) ** (1.0 / max(1, sweeps - 1))
+        temperature = t_initial
+        accepted = 0
+
+        for _ in range(sweeps):
+            for node in range(n):
+                current[node] ^= 1
+                candidate = _cut_value(current, mc.edges, mc.weights)
+                delta = candidate - current_obj          # maximising
+                if delta >= 0 or rng.random() < np.exp(delta / temperature):
+                    current_obj = candidate
+                    accepted += 1
+                    if candidate > best_obj:
+                        best, best_obj = list(current), candidate
+                else:
+                    current[node] ^= 1
+            temperature *= cooling
+
+        runtime = time.perf_counter() - t0
+
+        achieved = _cut_value(best, mc.edges, mc.weights)
+        if abs(achieved - best_obj) > 1e-9:
+            raise RuntimeError(
+                f"annealer's tracked best {best_obj} does not match the cut its "
+                f"own assignment achieves ({achieved})")
+
+        return {
+            "solution": best,
+            "objective_value": achieved,
+            "runtime_seconds": runtime,
+            "sweeps": sweeps,
+            "accepted_moves": accepted,
+            "status": "heuristic",
+            "algorithm_details": {
+                "approach": "simulated_annealing",
+                "neighborhood": "single_node_flip",
+                "cooling": "geometric",
+                "t_initial": t_initial,
+                "t_final": t_final,
+                "seed": int(kwargs.get("seed", 0)),
+            },
+        }
 
     def _evaluate_solution(self, solution: np.ndarray, problem: Dict[str, Any]) -> float:
         """Objective value of a candidate solution.

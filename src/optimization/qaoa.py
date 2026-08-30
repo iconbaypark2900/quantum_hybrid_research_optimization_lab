@@ -62,6 +62,25 @@ if TYPE_CHECKING:
     from .problems import PortfolioProblem, MaxCutProblem
 
 
+
+
+def interpolate_parameters(gammas, betas):
+    """INTERP warm start: seed depth p+1 from the optimum found at depth p.
+
+    Zhou et al., "Quantum Approximate Optimization Algorithm: Performance,
+    Mechanism, and Implementation on Near-Term Devices" (2020). Optimal QAOA
+    parameter schedules vary smoothly with depth, so linear interpolation of
+    the depth-p schedule starts depth p+1 far closer than a fresh random draw.
+    """
+    def _interp(values):
+        n = len(values)
+        padded = [0.0] + list(values) + [0.0]
+        return [((i - 1) / n) * padded[i - 1] + ((n - i + 1) / n) * padded[i]
+                for i in range(1, n + 2)]
+
+    return _interp(gammas), _interp(betas)
+
+
 class QAOA:
     """Quantum Approximate Optimization Algorithm implementation.
 
@@ -265,83 +284,107 @@ class QAOA:
         }
 
     def solve_maxcut(self, problem: 'MaxCutProblem', p: int = 1,
-                     optimizer: str = 'SPSA', max_iter: int = 100) -> Dict:
+                     optimizer: str = 'COBYLA', max_iter: int = 100,
+                     restarts: int = 1, warm_start: bool = False) -> Dict:
+        """Solve Max-Cut with QAOA.
+
+        `warm_start` builds the schedule layer by layer, seeding depth d from
+        the interpolated optimum at depth d-1 (see `interpolate_parameters`).
+        **It defaults off, because it was measured not to help.**
+
+        That default is worth explaining, because the opposite conclusion was
+        reached first and was wrong. A single run showed the approximation
+        ratio climbing 0.719 (p=1) -> 0.775 (p=3) and then falling to 0.724 at
+        p=4, which looked exactly like an optimiser losing a larger landscape --
+        the textbook motivation for INTERP. Repeating it over 4 instances x 2
+        initialisations gave:
+
+            p=2   cold 0.759   warm 0.767      (sd ~0.06)
+            p=4   cold 0.765   warm 0.738      (sd ~0.05)
+            p=6   cold 0.785   warm 0.771      (sd ~0.03)
+
+        Every difference is inside one standard deviation, and warm start is
+        behind at p=4 and p=6. The p=4 dip was run-to-run noise, not a
+        systematic failure. What does help, modestly and monotonically, is
+        depth itself: 0.759 -> 0.765 -> 0.785 from p=2 to p=6.
+
+        The option stays because it is correctly implemented and is standard
+        practice at depths beyond what is tested here; it is simply not on by
+        default on the strength of evidence that does not exist.
+
+        `restarts` takes the best of N independent initialisations. Both
+        settings are reported in the result, so a number can be reproduced.
+
+        The objective minimised is the QUBO energy expectation -- the same
+        objective the circuit encodes -- not a separate scoring function.
         """
-        Solve Max-Cut problem using QAOA.
+        qubo = maxcut_to_qubo(problem)
 
-        Args:
-            problem: Max-Cut problem instance
-            p: QAOA depth parameter
-            optimizer: Optimization algorithm to use
-            max_iter: Maximum optimization iterations
+        def expectation(counts) -> float:
+            total = sum(counts.values())
+            return sum(
+                c * qubo.energy(self._bits_from_counts_key(k, problem.n_nodes))
+                for k, c in counts.items()) / total
 
-        Returns:
-            Dictionary with solution and metadata
-        """
-        qc = self.create_maxcut_circuit(problem, p)
-        param_list = list(qc.parameters)
-
-        def cost_function(params):
-            bound_qc = qc.assign_parameters({par: float(val) for par, val in zip(param_list, params)}, inplace=False)
-            compiled = transpile(bound_qc, self.backend)
-            job = self.backend.run(compiled, shots=self.shots)
-            result = job.result()
-            counts = result.get_counts()
-
-            total_cost = 0
-            total_shots = 0
-
-            for bitstring, count in counts.items():
-                partition = self._bits_from_counts_key(bitstring, problem.n_nodes)
-                cut_value = 0
-                for (i, j), weight in zip(problem.edges, problem.weights):
-                    if partition[i] != partition[j]:
-                        cut_value += weight
-                total_cost += cut_value * count
-                total_shots += count
-
-            return -total_cost / total_shots
-
-        if optimizer == 'SPSA':
-            opt = SPSA(maxiter=max_iter)
-        elif optimizer == 'COBYLA':
-            opt = COBYLA(maxiter=max_iter)
-        else:
+        def make_optimizer():
+            if optimizer == 'SPSA':
+                return SPSA(maxiter=max_iter)
+            if optimizer == 'COBYLA':
+                return COBYLA(maxiter=max_iter)
             raise ValueError(f"Unknown optimizer: {optimizer}")
 
-        n_params = 2 * p
-        initial_params = np.random.uniform(0, 2 * np.pi, n_params)
+        best_params = None
+        qc = param_list = outcome = None
 
-        result = opt.minimize(cost_function, initial_params)
+        for depth in (range(1, p + 1) if warm_start else (p,)):
+            qc = self.create_maxcut_circuit(problem, p=depth)
+            param_list = list(qc.parameters)
 
-        final_qc = qc.assign_parameters({par: float(val) for par, val in zip(param_list, result.x)}, inplace=False)
-        final_compiled = transpile(final_qc, self.backend)
-        final_job = self.backend.run(final_compiled, shots=self.shots)
-        final_result = final_job.result()
-        final_counts = final_result.get_counts()
+            def cost_function(params, _qc=qc, _pl=param_list):
+                bound = _qc.assign_parameters(
+                    {par: float(v) for par, v in zip(_pl, params)},
+                    inplace=False)
+                counts = self.backend.run(transpile(bound, self.backend),
+                                          shots=self.shots).result().get_counts()
+                return expectation(counts)
 
-        def cut_value_from_bits(bits: np.ndarray) -> float:
-            value = 0.0
-            for (i, j), weight in zip(problem.edges, problem.weights):
-                if bits[i] != bits[j]:
-                    value += weight
-            return float(value)
+            if best_params is None:
+                seeds = [np.random.uniform(0, 2 * np.pi, 2 * depth)
+                         for _ in range(max(1, restarts))]
+            else:
+                half = len(best_params) // 2
+                g, b = interpolate_parameters(best_params[:half],
+                                              best_params[half:])
+                seeds = [np.array(g + b)]
 
-        best_partition = None
-        best_cut = float("-inf")
-        for bitstring, _count in final_counts.items():
-            part = self._bits_from_counts_key(bitstring, problem.n_nodes)
-            value = cut_value_from_bits(part)
+            outcome = min((make_optimizer().minimize(cost_function, s0)
+                           for s0 in seeds), key=lambda r: r.fun)
+            best_params = list(outcome.x)
+
+        final_qc = qc.assign_parameters(
+            {par: float(v) for par, v in zip(param_list, best_params)},
+            inplace=False)
+        final_counts = self.backend.run(transpile(final_qc, self.backend),
+                                        shots=self.shots).result().get_counts()
+
+        best_partition, best_cut = None, float("-inf")
+        for bitstring in final_counts:
+            bits = self._bits_from_counts_key(bitstring, problem.n_nodes)
+            value = qubo.cut_value(bits)
             if value > best_cut:
-                best_cut = value
-                best_partition = part
+                best_partition, best_cut = bits, value
 
         return {
             'partition': best_partition,
-            'cut_value': best_cut,
-            'optimal_params': result.x,
-            'final_cost': -result.fun,
-            'convergence': result.nfev,
+            'cut_value': float(best_cut),
+            'expectation_cut': float(-expectation(final_counts)),
+            'optimal_params': np.array(best_params),
+            'final_cost': float(outcome.fun),
+            'convergence': outcome.nfev,
+            'depth': p,
+            'optimizer': optimizer,
+            'restarts': restarts,
+            'warm_start': warm_start,
             'circuit': final_qc,
-            'counts': final_counts
+            'counts': final_counts,
         }

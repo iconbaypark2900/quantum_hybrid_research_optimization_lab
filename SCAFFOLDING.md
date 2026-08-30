@@ -24,12 +24,14 @@ unfalsifiable one, which is the specific failure the research-integrity work in
 |---|---|---|
 | ~~MILP/exact baseline~~ | — | **DONE.** Solves the real graph via linearised MILP; verified against brute force for n = 4..8 |
 | ~~heuristic baseline~~ | — | **DONE.** Hill-climbs the real cut value to a genuine local optimum; runtime measured |
-| ” — metaheuristic baseline | same | a real objective. The GA mechanics that were here (`src/hpo_evolution_service/`) were deleted in the shrink; recover them from `4971088` if wanted |
-| ” — ML baseline | reported `model_type: "feedforward_nn_simulated"`; there is no model | train a model, or delete the baseline |
+| ~~” — metaheuristic baseline~~ | same | **DONE.** Simulated annealing on the real cut value, geometric cooling, seeded and timed. Pinned against brute force, and asserted to accept worsening moves so it is not the greedy baseline under another name |
+| ~~” — ML baseline~~ | reported `model_type: "feedforward_nn_simulated"`; there is no model | **REMOVED.** The choice offered here was "train a model, or delete the baseline". There is no meaningful supervised baseline for a single Max-Cut instance, so it was deleted rather than left raising — asking for it now names what exists instead |
 | ” — `_evaluate_solution` | **the root fabrication**: returned a made-up function of how many bits were set, minus `np.random.uniform(0, 2)` — never looked at the problem, and was non-deterministic, so the search compared incomparable values | compute the real objective (cut weight / risk-adjusted return) |
 | ~~`src/execution_orchestrator_service/service.py`~~ | sampled counts from a binomial with no circuit involved; `execution_time` random; `average_objective_value` from a Hamming-weight formula labelled "Simple example"; advertised a 32-qubit backend that does not exist | **DONE.** Executes on `AerSimulator` with an optional depolarising noise model; refuses a missing circuit rather than downgrading |
 | ~~`src/error_mitigation_service/service.py` — ZNE~~ | as described below | **DONE.** Richardson and least-squares linear fits plus unitary folding (`zne.py`), verified against Mitiq; the loop is closed — it produces its own measurements at ≥2 noise factors and refuses a single unamplified run |
-| ” — PEC, CDR, VNLE | same shape: plausible output, technique never performed | PEC needs a characterised noise model; CDR needs near-Clifford training circuits |
+| ~~” — CDR~~ | same shape: plausible output, technique never performed | **DONE.** `mitiq.cdr.execute_with_cdr` against a noiseless simulator for the training set; measured to move the estimate toward the true value |
+| ” — PEC | same shape: plausible output, technique never performed | **Implemented, and measured not to help.** `mitiq.pec.execute_with_pec` runs, but its representations assume a depolarising convention Aer does not apply — Qiskit's `(1-p)ρ + p·I/2` is Mitiq's ε = 3p/4 on one qubit and 15p/16 on two, and Mitiq applies one ε to both. Bias ≈ +0.07 on a Bell state at 5% noise; more samples shrink the variance and not the bias. Needs representations matched to the channel actually applied |
+| ” — VNLE | same shape | not attempted |
 | ~~canonical form (QUBO/Ising)~~ | returned an **empty** QUBO (`linear_terms: {}`, `quadratic_terms: {}`) while logging success and reporting `method: "automatic_conversion"` | **DONE.** `src/optimization/canonical.py`. Max-Cut and portfolio to QUBO, with Ising by a single documented substitution. Verified by enumeration against brute force and against the MILP solver for n = 4..8, and on every assignment rather than only the optimum |
 
 ## Fixed since this file was written
@@ -92,6 +94,34 @@ in `tests/test_zne_end_to_end.py` and verified to fail when the optimisation
 level is restored.
 
 ## Known-broken, historical record
+
+**A fix that was measured and turned out not to be one** (2026-08-30). Not a shipped
+bug — a hypothesis that survived one run and died under a proper one, recorded because
+the discipline is the point.
+
+QAOA's approximation ratio on a 6-node instance climbed 0.719 (p=1) → 0.775 (p=3) and
+then *fell* to 0.724 at p=4. That is exactly what an optimiser losing a
+higher-dimensional landscape looks like, and it is the textbook motivation for INTERP
+layer-wise warm starts (Zhou et al. 2020). The warm start was implemented and defaulted
+on, with a docstring explaining the failure it fixed.
+
+Repeating over 4 instances × 2 initialisations:
+
+| p | cold | warm |
+|---|---|---|
+| 2 | 0.759 | 0.767 |
+| 4 | 0.765 | **0.738** |
+| 6 | 0.785 | **0.771** |
+
+Every difference is inside one standard deviation (~0.05), and warm start is *behind* at
+p=4 and p=6. The dip was run-to-run noise. The default was changed to off and the
+docstring rewritten to say so. What does help is depth itself, modestly: 0.759 → 0.785
+from p=2 to p=6.
+
+The lesson is the same one this repository keeps relearning at a different scale: a
+single measurement that agrees with a plausible story is not evidence, and the story
+being textbook-correct in general says nothing about whether it is operating here.
+
 
 **The portfolio QAOA circuit did not encode the portfolio problem** (fixed
 2026-08-30). Four defects at once, none visible from the result object:
