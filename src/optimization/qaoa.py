@@ -12,6 +12,8 @@ from qiskit_aer import Aer
 from qiskit.circuit import Parameter
 from typing import Dict, List, Tuple, Callable, Optional, TYPE_CHECKING
 
+from .canonical import maxcut_to_qubo, portfolio_to_qubo
+
 # Optimizers location differs across Qiskit versions; provide robust imports with fallbacks
 try:  # Qiskit Algorithms as separate package (newer)
     from qiskit_algorithms.optimizers import SPSA, COBYLA  # type: ignore
@@ -78,25 +80,43 @@ class QAOA:
         self.shots = shots
         self.backend = Aer.get_backend(backend_name)
 
-    def create_portfolio_circuit(self, problem: 'PortfolioProblem', p: int = 1) -> QuantumCircuit:
-        """
-        Create QAOA circuit for portfolio optimization.
+    def create_portfolio_circuit(self, problem: 'PortfolioProblem', p: int = 1,
+                                 budget: int = None, risk_aversion: float = 1.0,
+                                 penalty: float = None) -> QuantumCircuit:
+        """QAOA circuit for binary portfolio selection.
 
-        Args:
-            problem: Portfolio problem instance
-            p: QAOA depth parameter
+        `budget` is required: it is the number of assets to hold, and without
+        it the problem is not the one being solved. The previous version took
+        no budget at all, and its cost layer never read `problem.returns` --
+        see `_add_cost_hamiltonian` for what it encoded instead.
 
-        Returns:
-            Quantum circuit implementing QAOA
+        The Hamiltonian comes from `portfolio_to_qubo`, so this circuit and
+        `solve_portfolio`'s scoring are the same objective by construction.
         """
+        if budget is None:
+            raise ValueError(
+                "budget is required: binary portfolio selection needs the "
+                "number of assets to hold, and the budget penalty is part of "
+                "the objective the circuit has to encode")
+
         n_qubits = problem.n_assets
 
-        qc = QuantumCircuit(n_qubits, n_qubits)
+        # No explicit classical register: measure_all() adds its own ("meas").
+        # Declaring one here as well produced a circuit with 2n clbits, only n
+        # of which were ever written, and a counts key of the form "1000 0000".
+        # _bits_from_counts_key strips the space and takes the first n bits of
+        # the reversed string -- which was the never-written register. Every
+        # outcome decoded to all-zeros. See tests/test_qaoa_oracle.py.
+        qc = QuantumCircuit(n_qubits)
         qc.h(range(n_qubits))
+
+        ising = portfolio_to_qubo(problem, budget=budget,
+                                  risk_aversion=risk_aversion,
+                                  penalty=penalty).to_ising()
 
         for layer in range(p):
             gamma = Parameter(f'γ_{layer}')
-            self._add_portfolio_cost_hamiltonian(qc, problem, gamma)
+            self._add_cost_hamiltonian(qc, ising, gamma)
 
             beta = Parameter(f'β_{layer}')
             self._add_mixing_hamiltonian(qc, beta)
@@ -118,12 +138,15 @@ class QAOA:
         """
         n_qubits = problem.n_nodes
 
-        qc = QuantumCircuit(n_qubits, n_qubits)
+        # See create_portfolio_circuit: measure_all() supplies the register.
+        qc = QuantumCircuit(n_qubits)
         qc.h(range(n_qubits))
+
+        ising = maxcut_to_qubo(problem).to_ising()
 
         for layer in range(p):
             gamma = Parameter(f'γ_{layer}')
-            self._add_maxcut_cost_hamiltonian(qc, problem, gamma)
+            self._add_cost_hamiltonian(qc, ising, gamma)
 
             beta = Parameter(f'β_{layer}')
             self._add_mixing_hamiltonian(qc, beta)
@@ -132,26 +155,33 @@ class QAOA:
 
         return qc
 
-    def _add_portfolio_cost_hamiltonian(self, qc: QuantumCircuit, problem: 'PortfolioProblem', gamma: Parameter):
-        """Add portfolio cost Hamiltonian to circuit."""
-        n_assets = problem.n_assets
+    def _add_cost_hamiltonian(self, qc: QuantumCircuit, ising, gamma: Parameter):
+        """exp(-i gamma H_C) for H_C = sum h_i Z_i + sum J_ij Z_i Z_j.
 
-        for i in range(n_assets):
-            for j in range(n_assets):
-                if i != j:
-                    scalar_coeff = float(problem.covariances[i, j]) / 2.0
-                    if abs(scalar_coeff) > 1e-6:
-                        angle_ij = scalar_coeff * gamma
-                        qc.rz(angle_ij, i)
-                        qc.cx(i, j)
-                        qc.rz(angle_ij, j)
-                        qc.cx(i, j)
+        Driven by the Ising form from src/optimization/canonical.py, so the
+        circuit and the objective have a single definition and cannot disagree.
 
-    def _add_maxcut_cost_hamiltonian(self, qc: QuantumCircuit, problem: 'MaxCutProblem', gamma: Parameter):
-        """Add Max-Cut cost Hamiltonian to circuit."""
-        for (i, j), weight in zip(problem.edges, problem.weights):
+        That is not a tidiness argument. The portfolio cost layer was written
+        by hand and encoded something else entirely. It read only
+        `covariances` and never `returns`, so expected return -- half the
+        objective -- was absent from the circuit. It looped over ordered pairs
+        `(i, j)` and `(j, i)`, applying every coupling twice. And it emitted a
+        bare `rz` carrying the *pair* coefficient before each CX, adding a
+        single-qubit term proportional to the covariance row sum that appears
+        in no formulation of the problem. There was no budget constraint at
+        all. Meanwhile `solve_portfolio` scored its samples by a Sharpe ratio.
+        Circuit and scorer optimised different functions and nothing said so.
+
+        Max-Cut is unaffected by the move: its Ising form has h_i = 0 exactly
+        -- the linear and quadratic contributions cancel -- and J_ij = w_ij/2,
+        so `rz(2 * J * gamma)` is `rz(w * gamma)`, gate for gate what the
+        hand-written version emitted. tests/test_qaoa_oracle.py pins that.
+        """
+        for i, h in ising.h.items():
+            qc.rz(2.0 * h * gamma, i)
+        for (i, j), coupling in ising.J.items():
             qc.cx(i, j)
-            qc.rz(weight * gamma, j)
+            qc.rz(2.0 * coupling * gamma, j)
             qc.cx(i, j)
 
     def _add_mixing_hamiltonian(self, qc: QuantumCircuit, beta: Parameter):
@@ -161,49 +191,48 @@ class QAOA:
             qc.rx(2 * beta, i)
 
     def _bits_from_counts_key(self, key: str, num_qubits: int) -> np.ndarray:
-        """Convert a Qiskit counts key to a bit array with qubit index ordering."""
-        sanitized = key.replace(' ', '')
-        if len(sanitized) < num_qubits:
-            sanitized = sanitized.zfill(num_qubits)
-        ordered = sanitized[::-1]
-        return np.fromiter((1 if ch == '1' else 0 for ch in ordered), dtype=int, count=num_qubits)
+        """Decode a counts key. Delegates to the single shared implementation.
+
+        There were two decoders in this repository and only one was correct.
+        `src/optimization/objective.py` holds the canonical one so they cannot
+        drift; this wrapper exists only to keep the ndarray return type the
+        solvers below already expect.
+        """
+        from .objective import bits_from_counts_key
+        return np.asarray(bits_from_counts_key(key, num_qubits), dtype=int)
 
     def solve_portfolio(self, problem: 'PortfolioProblem', p: int = 1,
-                        optimizer: str = 'SPSA', max_iter: int = 100) -> Dict:
-        """
-        Solve portfolio optimization using QAOA.
+                        budget: int = None, risk_aversion: float = 1.0,
+                        penalty: float = None, optimizer: str = 'SPSA',
+                        max_iter: int = 100) -> Dict:
+        """Solve binary portfolio selection with QAOA.
 
-        Args:
-            problem: Portfolio problem instance
-            p: QAOA depth parameter
-            optimizer: Optimization algorithm to use
-            max_iter: Maximum optimization iterations
-
-        Returns:
-            Dictionary with solution and metadata
+        Both the circuit and the objective being minimised come from the same
+        `portfolio_to_qubo`. Previously they did not: the circuit encoded a
+        doubled covariance with a spurious linear term and no returns, while
+        this method scored samples by -return/risk. Two different functions,
+        optimised against each other, reported as one result.
         """
-        qc = self.create_portfolio_circuit(problem, p)
+        qubo = portfolio_to_qubo(problem, budget=budget,
+                                 risk_aversion=risk_aversion, penalty=penalty)
+        qc = self.create_portfolio_circuit(problem, p, budget=budget,
+                                           risk_aversion=risk_aversion,
+                                           penalty=penalty)
         param_list = list(qc.parameters)
 
-        def cost_function(params):
-            bound_qc = qc.assign_parameters({par: float(val) for par, val in zip(param_list, params)}, inplace=False)
-            compiled = transpile(bound_qc, self.backend)
-            job = self.backend.run(compiled, shots=self.shots)
-            result = job.result()
-            counts = result.get_counts()
-
-            total_cost = 0
-            total_shots = 0
-
+        def _energies(counts):
             for bitstring, count in counts.items():
-                allocation = self._bits_from_counts_key(bitstring, problem.n_assets)
-                portfolio_return = np.dot(allocation, problem.returns)
-                portfolio_risk = np.sqrt(allocation.T @ problem.covariances @ allocation)
-                cost = -portfolio_return / (portfolio_risk + 1e-6)
-                total_cost += cost * count
-                total_shots += count
+                bits = self._bits_from_counts_key(bitstring, problem.n_assets)
+                yield qubo.energy(bits), count, bits
 
-            return total_cost / total_shots
+        def cost_function(params):
+            bound_qc = qc.assign_parameters(
+                {par: float(val) for par, val in zip(param_list, params)},
+                inplace=False)
+            counts = self.backend.run(transpile(bound_qc, self.backend),
+                                      shots=self.shots).result().get_counts()
+            total = sum(counts.values())
+            return sum(e * c for e, c, _ in _energies(counts)) / total
 
         if optimizer == 'SPSA':
             opt = SPSA(maxiter=max_iter)
@@ -212,38 +241,27 @@ class QAOA:
         else:
             raise ValueError(f"Unknown optimizer: {optimizer}")
 
-        n_params = 2 * p
-        initial_params = np.random.uniform(0, 2 * np.pi, n_params)
-
+        initial_params = np.random.uniform(0, 2 * np.pi, 2 * p)
         result = opt.minimize(cost_function, initial_params)
 
-        final_qc = qc.assign_parameters({par: float(val) for par, val in zip(param_list, result.x)}, inplace=False)
-        final_compiled = transpile(final_qc, self.backend)
-        final_job = self.backend.run(final_compiled, shots=self.shots)
-        final_result = final_job.result()
-        final_counts = final_result.get_counts()
+        final_qc = qc.assign_parameters(
+            {par: float(val) for par, val in zip(param_list, result.x)},
+            inplace=False)
+        final_counts = self.backend.run(transpile(final_qc, self.backend),
+                                        shots=self.shots).result().get_counts()
 
-        def portfolio_cost_from_bits(bits: np.ndarray) -> float:
-            portfolio_return = float(np.dot(bits, problem.returns))
-            portfolio_risk = float(np.sqrt(max(0.0, bits.T @ problem.covariances @ bits)))
-            return -(portfolio_return) / (portfolio_risk + 1e-6)
-
-        best_allocation = None
-        best_cost = float("inf")
-        for bitstring, _count in final_counts.items():
-            alloc = self._bits_from_counts_key(bitstring, problem.n_assets)
-            cost_val = portfolio_cost_from_bits(alloc)
-            if cost_val < best_cost:
-                best_cost = cost_val
-                best_allocation = alloc
+        best_energy, _, best_allocation = min(_energies(final_counts),
+                                              key=lambda t: t[0])
 
         return {
             'allocation': best_allocation,
+            'selected_assets': [int(i) for i, b in enumerate(best_allocation) if b],
+            'objective_energy': float(best_energy),
+            'budget': budget,
             'optimal_params': result.x,
-            'final_cost': best_cost,
             'convergence': result.nfev,
             'circuit': final_qc,
-            'counts': final_counts
+            'counts': final_counts,
         }
 
     def solve_maxcut(self, problem: 'MaxCutProblem', p: int = 1,

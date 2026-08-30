@@ -1,0 +1,74 @@
+name: CI
+
+# Nothing built or tested this repository for its first three months. In that
+# time an entry point that did not parse, a dependency manifest that could not
+# install, and a demo that reported success over its own failures all survived
+# in main. Each of them is a single command away from being caught.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 and 3.11 only, and this is enforced in pyproject.toml. mitiq
+        # cannot be installed on 3.12+: pip falls back to a placeholder 0.0.0
+        # with no mitiq.zne, and the ZNE tests then fail for reasons unrelated
+        # to this code. Both versions are verified: they resolve different
+        # qiskit and mitiq releases and the suite passes on each.
+        python-version: ["3.10", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        # Goes through requirements.txt on purpose -- it is what the README
+        # tells a reader to run, so it is what CI must prove works.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Report the resolved environment
+        # The floor pins are not what the suite ran against. Print what
+        # actually resolved, so a future failure can be attributed.
+        run: pip list | grep -Ei "qiskit|mitiq|cvxpy|numpy|scipy|ply|pytest"
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Usage example
+        run: python examples/qoptisolve_usage.py
+
+      - name: Benchmark
+        # The entry point. Small instance so CI stays quick; the point is that
+        # it runs end to end and reports real numbers on both sides.
+        run: python benchmark.py --n-nodes 5 --shots 512 --max-iter 5
+
+  compile:
+    # Deliberately pinned to the oldest supported interpreter, and deliberately
+    # its own job so the reason cannot be edited away by accident.
+    #
+    # main_orchestrator.py sat in main from the first commit with an f-string
+    # whose expression spanned several lines. PEP 701 legalised that in 3.12,
+    # so on a modern interpreter `compileall` exits 0 and proves nothing --
+    # while the interpreter this project must actually use cannot parse it.
+    # This job is the guard against reintroducing that class of construct.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Every tracked file must parse on the oldest supported interpreter
+        run: python -m compileall -q .

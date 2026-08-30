@@ -24,13 +24,13 @@ unfalsifiable one, which is the specific failure the research-integrity work in
 |---|---|---|
 | ~~MILP/exact baseline~~ | — | **DONE.** Solves the real graph via linearised MILP; verified against brute force for n = 4..8 |
 | ~~heuristic baseline~~ | — | **DONE.** Hill-climbs the real cut value to a genuine local optimum; runtime measured |
-| ” — metaheuristic baseline | same | a real objective; the GA mechanics in `src/hpo_evolution_service/` are genuine and reusable |
+| ” — metaheuristic baseline | same | a real objective. The GA mechanics that were here (`src/hpo_evolution_service/`) were deleted in the shrink; recover them from `4971088` if wanted |
 | ” — ML baseline | reported `model_type: "feedforward_nn_simulated"`; there is no model | train a model, or delete the baseline |
 | ” — `_evaluate_solution` | **the root fabrication**: returned a made-up function of how many bits were set, minus `np.random.uniform(0, 2)` — never looked at the problem, and was non-deterministic, so the search compared incomparable values | compute the real objective (cut weight / risk-adjusted return) |
-| `src/execution_orchestrator_service/service.py` | sampled counts from a binomial with no circuit involved; `execution_time` random; `average_objective_value` from a Hamming-weight formula labelled "Simple example"; advertised a 32-qubit backend that does not exist | run on `qiskit-aer` (pinned in requirements.txt but **not installed** — `./.venv/bin/pip install qiskit qiskit-aer`) |
-| `src/error_mitigation_service/service.py` — ZNE | as described below | **PARTLY DONE.** The extrapolation half is implemented and tested (`zne.py`): Richardson and least-squares linear fits, plus unitary folding. It now requires real measurements at ≥2 noise factors and refuses a single unamplified run. Producing those measurements end-to-end still needs circuit execution |
+| ~~`src/execution_orchestrator_service/service.py`~~ | sampled counts from a binomial with no circuit involved; `execution_time` random; `average_objective_value` from a Hamming-weight formula labelled "Simple example"; advertised a 32-qubit backend that does not exist | **DONE.** Executes on `AerSimulator` with an optional depolarising noise model; refuses a missing circuit rather than downgrading |
+| ~~`src/error_mitigation_service/service.py` — ZNE~~ | as described below | **DONE.** Richardson and least-squares linear fits plus unitary folding (`zne.py`), verified against Mitiq; the loop is closed — it produces its own measurements at ≥2 noise factors and refuses a single unamplified run |
 | ” — PEC, CDR, VNLE | same shape: plausible output, technique never performed | PEC needs a characterised noise model; CDR needs near-Clifford training circuits |
-| `src/problem_definition_service/service.py` — canonical form | returned an **empty** QUBO (`linear_terms: {}`, `quadratic_terms: {}`) while logging success and reporting `method: "automatic_conversion"` | build the coefficient maps; `src/optimization/problems.py` already holds real MaxCut edge weights and portfolio covariance |
+| ~~canonical form (QUBO/Ising)~~ | returned an **empty** QUBO (`linear_terms: {}`, `quadratic_terms: {}`) while logging success and reporting `method: "automatic_conversion"` | **DONE.** `src/optimization/canonical.py`. Max-Cut and portfolio to QUBO, with Ising by a single documented substitution. Verified by enumeration against brute force and against the MILP solver for n = 4..8, and on every assignment rather than only the optimum |
 
 ## Fixed since this file was written
 
@@ -93,6 +93,94 @@ level is restored.
 
 ## Known-broken, historical record
 
+**The portfolio QAOA circuit did not encode the portfolio problem** (fixed
+2026-08-30). Four defects at once, none visible from the result object:
+
+- the cost layer read only `problem.covariances` and never `problem.returns`, so
+  expected return — half the objective — was absent from the circuit;
+- it looped over ordered pairs `(i, j)` and `(j, i)`, applying every coupling twice;
+- it emitted a bare `rz` carrying the *pair* coefficient before each CX, adding a
+  single-qubit term proportional to the covariance row sum that appears in no
+  formulation of the problem;
+- there was no budget constraint at all.
+
+Meanwhile `solve_portfolio` scored its samples by a Sharpe ratio. **The circuit and
+the scorer were optimising different functions**, and the returned dict — allocation,
+final_cost, convergence — looked exactly as it would have if they agreed.
+
+Both now derive from `portfolio_to_qubo`, so they are the same objective by
+construction, and the cost layer is a single generic Ising builder shared with
+Max-Cut. Max-Cut's circuit is unchanged by that move and provably so: its Ising form
+has `h_i = 0` exactly and `J_ij = w_ij/2`, so `rz(2·J·γ)` is the `rz(w·γ)` the
+hand-written version emitted — the existing gate-count tests pass untouched.
+
+`tests/test_portfolio_qaoa_oracle.py` pins it against brute-force enumeration.
+Reintroducing each of the four defects fails 4, 2, 3 and 6 of its 15 tests.
+
+One test-design note worth keeping: the first version of those tests compared
+`str(instruction.operation.params)` on an *unbound* circuit, which compares
+`ParameterExpression` object reprs — memory addresses. It passed in isolation and
+failed in the full suite. Binding the parameters first compares the coefficients the
+circuit actually encodes.
+
+**The comparison scored a real optimum against a default argument** (fixed
+2026-08-30). `compute_optimality_gaps` read the quantum number as
+`quantum_result.get('objective_value', 0.0)` — a silent default, for a key nothing
+in this repository produced. It then computed a relative gap from it, attached an
+interpretation, and returned it as the headline result.
+
+Beside it, the confidence interval was the literal
+`[relative_gap - 0.05, relative_gap + 0.05]`, commented `# Simulated CI`: a fixed
+width with no variance, no bootstrap and no shot noise behind it. A confidence
+interval is the archetypal number a reader takes as a measurement — it is an explicit
+quantitative claim about uncertainty — and this one was a constant. `_interpret_gap`
+completed the picture by returning "Significant quantum advantage (>10% improvement)"
+from a single, unseeded, unreplicated run.
+
+All three are gone. The objective is refused when absent, the interval is derived from
+a standard error computed over the measured distribution and omitted when there is
+none, and the word "significant" is not used until something computes it.
+`tests/test_repository_claims.py` fails if a measured quantity is read with a numeric
+default again — and it found a second live instance the moment it was written,
+`list_baseline_results` reporting an absent objective as `0`.
+
+**QAOA decoded every measurement to all-zeros** (fixed 2026-08-30). The only real
+quantum solver in the repository had never been run. The first time it was, on a
+4-cycle whose optimum is 4:
+
+```
+exact optimum : 4.0
+QAOA reported : cut_value 0.0, partition [0 0 0 0], convergence 5
+```
+
+The circuits were built as `QuantumCircuit(n, n)` and then measured with
+`measure_all()`, which adds a **second** classical register. The counts key was
+therefore `"1000 0000"` — the measured register, then the one never written.
+`_bits_from_counts_key` stripped the space and took the first `n` bits of the
+reversed string, which came from the empty register. So every sampled partition
+scored a cut of 0, the optimiser saw a flat landscape, and the result object came
+back complete, consistent and confident.
+
+Nothing about that is visible from outside: the dict has the right keys, the value
+is a float, `convergence` reports iterations, and `cut_value` genuinely matches the
+`partition` beside it — both were simply wrong together. Internal consistency is not
+evidence.
+
+`tests/test_qaoa_oracle.py` pins it with an oracle that needs no sampling at all:
+prepare a computational basis state, measure it, and require the decoder to return
+that exact pattern. Asymmetric patterns are used deliberately, because a reversed or
+truncated decoder round-trips `0000` and `1111` and fails only on the rest. Restoring
+the two-register construction fails 11 of the 27 tests.
+
+**`MaxCutProblem.n_nodes` silently dropped isolated nodes** (fixed alongside it). It
+counted distinct nodes appearing in an edge, so
+`create_sample_maxcut(n_nodes=6, edge_prob=0.2)` returned a problem reporting 4.
+Every consumer sizes itself from that — QAOA one qubit per node, the MILP solver one
+variable, the brute-force oracle `2**n` — so all three solved a smaller problem than
+the caller asked for, and none could tell. An isolated node cannot be recovered from
+an edge list, so it is now declared explicitly.
+
+
 **`ClassicalMaxCutSolver` did not solve** (fixed — kept here because the failure
 mode is instructive).
 Its objective was `x[i]*(1-x[j]) + x[j]*(1-x[i])`, which is bilinear, so cvxpy
@@ -113,24 +201,17 @@ The fix was textbook MILP linearisation: `y_ij ∈ [0,1]` per edge with
 `y_ij ≤ x_i + x_j`, `y_ij ≤ 2 − x_i − x_j`, `y_ij ≥ x_i − x_j`, `y_ij ≥ x_j − x_i`,
 maximising `Σ w_ij · y_ij` — linear, hence DCP-compliant, and exact for binary `x`.
 
-## Duplicate service tree
+## Duplicate service tree — resolved
 
-`services/*.py` is an older copy of every service in `src/`. `main.py` uses
-`src/`; `main_orchestrator.py` still imports `services/`, which cannot run in
-`.venv` regardless (needs `pydantic`).
+`services/*.py` was an older copy of every service in `src/`, and it fabricated worse
+than its counterpart: its ZNE pushed probabilities **toward** 0.5 — measured peak
+0.70 → 0.62, entropy 1.32 → 1.55 bits — flattening the distribution, the opposite of
+its own comment and of what mitigation does.
 
-The duplicates still fabricate, and one is worse than its counterpart: the
-`services/` copy of ZNE pushes probabilities **toward** 0.5 — measured peak
-0.70 → 0.62, entropy 1.32 → 1.55 bits — flattening the distribution, the
-opposite of its own comment and of what mitigation does. The `src/` copy at
-least sharpens.
-
-They now raise `ImportError` on import rather than being deleted, because
-deleting a tree that a live entry point imports, without being able to run that
-entry point, trades one silent breakage for another.
-
-**To resolve:** repoint `main_orchestrator.py` at `src/`, check the constructor
-signatures line up, then delete `services/`.
+It was left raising `ImportError` rather than deleted, because `main_orchestrator.py`
+imported it and could not be run to verify the change. Both were deleted in `4971088`:
+`main_orchestrator.py` had never parsed on an interpreter this project can use, so the
+entry point that blocked the deletion had never worked either.
 
 ## What is genuinely real
 
@@ -144,11 +225,35 @@ what to trust:
   `solve_portfolio_greedy` are real greedy heuristics.
 - `src/error_mitigation_service/zne.py` — real Richardson and linear
   extrapolation, and unitary folding.
-- `src/hpo_evolution_service/service.py` — genuine GA mechanics. Its randomness
-  is algorithmic (mutation, crossover, tournament selection), not fabricated
-  results, and should be left alone.
-- `migration_inbox/qOptiSolve/` — prior work with its own tests, including real
-  QAOA cost and mixing Hamiltonians.
+- `src/optimization/objective.py` — reduces measured counts through the cost
+  Hamiltonian to an expectation value, with a standard error computed from the
+  distribution actually measured. Reports the best single sample beside it, named for
+  what it is: a maximum over shots, which improves with shots even for a circuit that
+  encodes nothing.
+- `src/hybrid_baseline_service/service.py` — `compute_optimality_gaps` now refuses a
+  quantum result carrying no objective value, offers an interval only when one was
+  measured, and states the gap without asserting significance.
+- `benchmark.py` — the entry point. Builds, solves exactly, runs QAOA with ZNE against
+  the cost observable, and reports the comparison with its provenance.
+- `src/optimization/canonical.py` — QUBO and Ising conversion, a minimisation by
+  construction. Its minimum agrees with brute force and with the verified MILP solver,
+  and it values every assignment correctly, not merely the optimum.
+- `src/optimization/qaoa.py` — real `QuantumCircuit` construction with genuine cost
+  and mixing Hamiltonians, driven by SPSA/COBYLA. Now verified: it recovers the known
+  optimum on hand-solvable graphs, never exceeds the exact solver, and its counts
+  decoder round-trips prepared basis states. See the historical record below for what
+  the first run of it found.
+- `src/execution_orchestrator_service/service.py` — real Aer execution, transpiled at
+  `optimization_level=0` so folding survives.
+
+An earlier version of this list vouched for `src/hpo_evolution_service/` ("should be
+left alone") and for `migration_inbox/qOptiSolve/`. Both claims were wrong. The HPO
+service reported `gp_kernel: "matern"` and `acquisition_function:
+"expected_improvement"` with no Gaussian process anywhere in the codebase, and the
+qOptiSolve tree still contained the exact non-solving bilinear Max-Cut objective this
+document holds up as its most instructive failure, with tests that mocked cvxpy so
+they passed over it. Both were deleted in the shrink. **A document whose value is that
+its coverage can be trusted has to be audited too.**
 
 The rule used throughout: **randomness as an algorithmic choice is legitimate;
 randomness as a reported result is fabrication.** The test is whether a caller

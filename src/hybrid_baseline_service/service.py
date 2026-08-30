@@ -262,67 +262,115 @@ class HybridBaselineService:
             "MaxCut, sum the weights of cut edges; for the portfolio problem, "
             "the risk-adjusted return in src/optimization/problems.py")
 
-    async def compute_optimality_gaps(self, quantum_result: Dict[str, Any], 
+    async def compute_optimality_gaps(self, quantum_result: Dict[str, Any],
                                     classical_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Compute optimality gaps between quantum and classical results"""
+        """Compare a quantum result against the classical baselines.
+
+        Two things here used to be invented.
+
+        The quantum number was read as `quantum_result.get('objective_value',
+        0.0)` -- a silent default, for a key nothing in the repository
+        produced. The comparison therefore scored a real MILP optimum against
+        a default argument and reported the gap with an interpretation
+        attached. It now refuses a result that carries no objective value, in
+        the style of the rest of this codebase: a caller that cannot get an
+        answer is inconvenienced; one that gets a fabricated one is misled.
+
+        The confidence interval was the literal
+        `[relative_gap - 0.05, relative_gap + 0.05]`, commented `# Simulated
+        CI` -- a fixed width with no variance, no bootstrap and no shot noise
+        behind it, on the headline number of the project. A confidence
+        interval is the archetypal value a reader takes as a measurement. It
+        is now carried through from the quantum result's `standard_error`,
+        which `src/optimization/objective.py` computes from the distribution
+        actually measured, and is simply absent when that is unavailable.
+        """
         logger.info("Computing optimality gaps")
-        
-        # Extract quantum results
-        quantum_obj = quantum_result.get('objective_value', 0.0)
-        
-        # Find best classical result
-        best_classical_obj = max(
-            [res.get('result', {}).get('objective_value', float('-inf')) 
-             for res in classical_results if 'result' in res],
-            default=0.0
-        )
-        
-        # Calculate gaps
-        if best_classical_obj != 0:
-            relative_gap = (quantum_obj - best_classical_obj) / abs(best_classical_obj)
-        else:
-            relative_gap = float('inf') if quantum_obj > 0 else 0.0
-        
+
+        if "objective_value" not in quantum_result:
+            raise ValueError(
+                "quantum_result carries no 'objective_value'. Nothing here "
+                "will substitute a default: a gap computed against 0.0 is "
+                "indistinguishable from a real one. Produce it with "
+                "src/optimization/objective.objective_from_counts, which "
+                "reduces measured counts through the cost Hamiltonian.")
+        quantum_obj = float(quantum_result["objective_value"])
+
+        scored = [res["result"]["objective_value"]
+                  for res in classical_results
+                  if "result" in res and "objective_value" in res["result"]]
+        if not scored:
+            raise ValueError(
+                "no classical baseline reported an objective value, so there "
+                "is nothing to compare against")
+        best_classical_obj = float(max(scored))
+
         abs_gap = quantum_obj - best_classical_obj
-        
-        # Determine performance
-        if abs(relative_gap) < 0.01:  # Within 1%
+        if best_classical_obj != 0:
+            relative_gap = abs_gap / abs(best_classical_obj)
+        else:
+            relative_gap = float("inf") if quantum_obj > 0 else 0.0
+
+        if abs(relative_gap) < 0.01:
             performance = "equivalent"
-        elif relative_gap > 0.01:  # Quantum better
-            performance = "quantum_superior"
-        else:  # Classical better
-            performance = "classical_superior"
-        
-        return {
+        elif relative_gap > 0:
+            performance = "quantum_higher"
+        else:
+            performance = "classical_higher"
+
+        out = {
             "quantum_objective": quantum_obj,
             "best_classical_objective": best_classical_obj,
             "relative_gap": relative_gap,
             "absolute_gap": abs_gap,
             "performance_assessment": performance,
-            "quantum_advantage_ratio": quantum_obj / best_classical_obj if best_classical_obj != 0 else float('inf'),
-            "confidence_interval": [relative_gap - 0.05, relative_gap + 0.05],  # Simulated CI
-            "interpretation": self._interpret_gap(relative_gap, performance)
+            "interpretation": self._interpret_gap(relative_gap, performance),
+            "baselines_compared": len(scored),
         }
-    
+
+        # Uncertainty is reported only when it was measured. The alternative --
+        # a plausible-looking interval that is really a constant -- is the
+        # failure this method was rewritten to remove.
+        stderr = quantum_result.get("standard_error")
+        if stderr is not None and best_classical_obj != 0:
+            stderr = float(stderr)
+            rel_stderr = stderr / abs(best_classical_obj)
+            out["quantum_standard_error"] = stderr
+            out["relative_gap_standard_error"] = rel_stderr
+            out["relative_gap_interval_1se"] = [relative_gap - rel_stderr,
+                                                relative_gap + rel_stderr]
+            out["uncertainty"] = (
+                "one standard error of the sampled quantum expectation; "
+                "sampling error only -- it says nothing about hardware noise "
+                "or whether the circuit prepares a good state")
+        else:
+            out["uncertainty"] = (
+                "not quantified: the quantum result carried no standard_error")
+
+        for key in ("shots", "best_sampled_value", "provenance"):
+            if key in quantum_result:
+                out[key] = quantum_result[key]
+        return out
+
     def _interpret_gap(self, gap: float, performance: str) -> str:
-        """Interpret the optimality gap result"""
-        if performance == "quantum_superior":
-            if gap > 0.1:  # >10% improvement
-                return "Significant quantum advantage (>10% improvement)"
-            elif gap > 0.05:  # 5-10% improvement
-                return "Moderate quantum advantage (5-10% improvement)"
-            else:  # <5% improvement
-                return "Marginal quantum advantage (<5% improvement)"
-        elif performance == "classical_superior":
-            if gap < -0.1:  # >10% worse
-                return "Significant quantum disadvantage (>10% worse)"
-            elif gap < -0.05:  # 5-10% worse
-                return "Moderate quantum disadvantage (5-10% worse)"
-            else:  # <5% worse
-                return "Marginal quantum disadvantage (<5% worse)"
-        else:  # equivalent
-            return "No significant difference between quantum and classical approaches"
-    
+        """State the gap. Do not assert significance.
+
+        This returned strings like "Significant quantum advantage (>10%
+        improvement)" on the basis of a single, unseeded, unreplicated
+        comparison. Significance is a statistical claim and nothing here
+        computes one; the word is not used until something does.
+        """
+        pct = abs(gap) * 100.0
+        if performance == "equivalent":
+            return (f"Quantum and best classical objective differ by "
+                    f"{pct:.2f}% -- within the 1% band this method treats as "
+                    "equivalent. No significance test was performed.")
+        direction = "higher" if performance == "quantum_higher" else "lower"
+        return (f"Quantum objective is {pct:.2f}% {direction} than the best "
+                "classical baseline. This is one comparison, not a "
+                "significance test; repeat with independent seeds before "
+                "drawing a conclusion.")
+
     async def get_baseline_result(self, baseline_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a specific baseline result"""
         return self.baseline_results.get(baseline_id)
@@ -335,8 +383,11 @@ class HybridBaselineService:
                     "baseline_id": bid,
                     "problem_id": b["problem_id"],
                     "algorithm": b["algorithm"],
-                    "objective_value": b["result"].get("objective_value", 0),
-                    "runtime": b["result"].get("runtime_seconds", 0),
+                    # None, not 0: a stored baseline that carries no objective
+                    # has not scored zero, and a reader must be able to tell
+                    # the difference.
+                    "objective_value": b["result"].get("objective_value"),
+                    "runtime": b["result"].get("runtime_seconds"),
                     "computed_at": b["computed_at"]
                 }
                 for bid, b in self.baseline_results.items()
