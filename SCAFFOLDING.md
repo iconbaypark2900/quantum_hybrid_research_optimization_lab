@@ -24,13 +24,13 @@ unfalsifiable one, which is the specific failure the research-integrity work in
 |---|---|---|
 | ~~MILP/exact baseline~~ | — | **DONE.** Solves the real graph via linearised MILP; verified against brute force for n = 4..8 |
 | ~~heuristic baseline~~ | — | **DONE.** Hill-climbs the real cut value to a genuine local optimum; runtime measured |
-| ” — metaheuristic baseline | same | a real objective; the GA mechanics in `src/hpo_evolution_service/` are genuine and reusable |
+| ” — metaheuristic baseline | same | a real objective. The GA mechanics that were here (`src/hpo_evolution_service/`) were deleted in the shrink; recover them from `4971088` if wanted |
 | ” — ML baseline | reported `model_type: "feedforward_nn_simulated"`; there is no model | train a model, or delete the baseline |
 | ” — `_evaluate_solution` | **the root fabrication**: returned a made-up function of how many bits were set, minus `np.random.uniform(0, 2)` — never looked at the problem, and was non-deterministic, so the search compared incomparable values | compute the real objective (cut weight / risk-adjusted return) |
-| `src/execution_orchestrator_service/service.py` | sampled counts from a binomial with no circuit involved; `execution_time` random; `average_objective_value` from a Hamming-weight formula labelled "Simple example"; advertised a 32-qubit backend that does not exist | run on `qiskit-aer` (pinned in requirements.txt but **not installed** — `./.venv/bin/pip install qiskit qiskit-aer`) |
-| `src/error_mitigation_service/service.py` — ZNE | as described below | **PARTLY DONE.** The extrapolation half is implemented and tested (`zne.py`): Richardson and least-squares linear fits, plus unitary folding. It now requires real measurements at ≥2 noise factors and refuses a single unamplified run. Producing those measurements end-to-end still needs circuit execution |
+| ~~`src/execution_orchestrator_service/service.py`~~ | sampled counts from a binomial with no circuit involved; `execution_time` random; `average_objective_value` from a Hamming-weight formula labelled "Simple example"; advertised a 32-qubit backend that does not exist | **DONE.** Executes on `AerSimulator` with an optional depolarising noise model; refuses a missing circuit rather than downgrading |
+| ~~`src/error_mitigation_service/service.py` — ZNE~~ | as described below | **DONE.** Richardson and least-squares linear fits plus unitary folding (`zne.py`), verified against Mitiq; the loop is closed — it produces its own measurements at ≥2 noise factors and refuses a single unamplified run |
 | ” — PEC, CDR, VNLE | same shape: plausible output, technique never performed | PEC needs a characterised noise model; CDR needs near-Clifford training circuits |
-| `src/problem_definition_service/service.py` — canonical form | returned an **empty** QUBO (`linear_terms: {}`, `quadratic_terms: {}`) while logging success and reporting `method: "automatic_conversion"` | build the coefficient maps; `src/optimization/problems.py` already holds real MaxCut edge weights and portfolio covariance |
+| canonical form (QUBO/Ising) | returned an **empty** QUBO (`linear_terms: {}`, `quadratic_terms: {}`) while logging success and reporting `method: "automatic_conversion"` | **Nothing implements this at all now.** `src/problem_definition_service/` was deleted in the shrink; the conversion belongs in `src/optimization/`, beside the `MaxCutProblem` edge weights and portfolio covariance it must read. This is the blocker for every quantum result |
 
 ## Fixed since this file was written
 
@@ -113,24 +113,17 @@ The fix was textbook MILP linearisation: `y_ij ∈ [0,1]` per edge with
 `y_ij ≤ x_i + x_j`, `y_ij ≤ 2 − x_i − x_j`, `y_ij ≥ x_i − x_j`, `y_ij ≥ x_j − x_i`,
 maximising `Σ w_ij · y_ij` — linear, hence DCP-compliant, and exact for binary `x`.
 
-## Duplicate service tree
+## Duplicate service tree — resolved
 
-`services/*.py` is an older copy of every service in `src/`. `main.py` uses
-`src/`; `main_orchestrator.py` still imports `services/`, which cannot run in
-`.venv` regardless (needs `pydantic`).
+`services/*.py` was an older copy of every service in `src/`, and it fabricated worse
+than its counterpart: its ZNE pushed probabilities **toward** 0.5 — measured peak
+0.70 → 0.62, entropy 1.32 → 1.55 bits — flattening the distribution, the opposite of
+its own comment and of what mitigation does.
 
-The duplicates still fabricate, and one is worse than its counterpart: the
-`services/` copy of ZNE pushes probabilities **toward** 0.5 — measured peak
-0.70 → 0.62, entropy 1.32 → 1.55 bits — flattening the distribution, the
-opposite of its own comment and of what mitigation does. The `src/` copy at
-least sharpens.
-
-They now raise `ImportError` on import rather than being deleted, because
-deleting a tree that a live entry point imports, without being able to run that
-entry point, trades one silent breakage for another.
-
-**To resolve:** repoint `main_orchestrator.py` at `src/`, check the constructor
-signatures line up, then delete `services/`.
+It was left raising `ImportError` rather than deleted, because `main_orchestrator.py`
+imported it and could not be run to verify the change. Both were deleted in `4971088`:
+`main_orchestrator.py` had never parsed on an interpreter this project can use, so the
+entry point that blocked the deletion had never worked either.
 
 ## What is genuinely real
 
@@ -144,11 +137,21 @@ what to trust:
   `solve_portfolio_greedy` are real greedy heuristics.
 - `src/error_mitigation_service/zne.py` — real Richardson and linear
   extrapolation, and unitary folding.
-- `src/hpo_evolution_service/service.py` — genuine GA mechanics. Its randomness
-  is algorithmic (mutation, crossover, tournament selection), not fabricated
-  results, and should be left alone.
-- `migration_inbox/qOptiSolve/` — prior work with its own tests, including real
-  QAOA cost and mixing Hamiltonians.
+- `src/optimization/qaoa.py` — real `QuantumCircuit` construction with genuine cost
+  and mixing Hamiltonians, driven by SPSA/COBYLA. **Caveat: nothing tests it and
+  nothing calls it.** It is the only real quantum solver here and it is unverified;
+  treat it as promising rather than trusted until it has an oracle.
+- `src/execution_orchestrator_service/service.py` — real Aer execution, transpiled at
+  `optimization_level=0` so folding survives.
+
+An earlier version of this list vouched for `src/hpo_evolution_service/` ("should be
+left alone") and for `migration_inbox/qOptiSolve/`. Both claims were wrong. The HPO
+service reported `gp_kernel: "matern"` and `acquisition_function:
+"expected_improvement"` with no Gaussian process anywhere in the codebase, and the
+qOptiSolve tree still contained the exact non-solving bilinear Max-Cut objective this
+document holds up as its most instructive failure, with tests that mocked cvxpy so
+they passed over it. Both were deleted in the shrink. **A document whose value is that
+its coverage can be trusted has to be audited too.**
 
 The rule used throughout: **randomness as an algorithmic choice is legitimate;
 randomness as a reported result is fabrication.** The test is whether a caller

@@ -1,186 +1,100 @@
 # Quantum Hybrid Research & Optimization Lab
 
-A state-of-the-art platform for quantum-classical hybrid research, featuring advanced optimization algorithms, machine learning integration, and real-time experimentation capabilities.
+A small library of **verified** quantum-classical optimization components: exact and
+heuristic Max-Cut baselines, zero-noise extrapolation checked against Mitiq, and circuit
+execution on Qiskit Aer. Every number this repository reports is computed. Where something
+is not implemented, it raises rather than returning a plausible value.
 
-## Project Overview
+That second sentence is the whole point, and it was expensive to earn.
 
-The Quantum Hybrid Research & Optimization Lab is a comprehensive platform designed for:
-- **Quantum-Classical Hybrid Algorithms**: Combining quantum computing with classical optimization techniques
-- **Hyperparameter Optimization**: Advanced HPO using evolutionary algorithms and Bayesian optimization
-- **Error Mitigation**: State-of-the-art quantum error mitigation techniques
-- **Comparative Analysis**: Rigorous comparison of quantum vs classical approaches
-- **Experiment Tracking**: Comprehensive tracking and retrieval-augmented generation (RAG) over experimental results
+## What happened here
 
-## Architecture
+This began as a seven-service platform — problem definition, circuit generation, execution,
+error mitigation, classical baselines, hyperparameter search, and an MLflow-backed
+experiment registry with retrieval. Most of it did not work, and the parts that did not
+work returned numbers anyway.
 
-### Core Services
+The clearest example: the headline Max-Cut solver had never solved anything. Its objective
+was bilinear, so cvxpy rejected it as non-DCP; the solver caught the exception, warned, and
+returned `{'cut_value': None, 'status': 'error'}`. **The test suite passed regardless**,
+because the tests asserted on shape and status and never on a cut being found. A headline
+solver that had never solved, with green tests over it, for as long as it existed.
 
-#### 1. **Problem Definition Service**
-- Defines optimization and simulation problems
-- Converts to canonical forms (QUBO/Ising/Hamiltonian)
-- Manages problem specifications and constraints
+Fixing that took a change of method, not of code: only an oracle distinguishes a working
+solver from a broken one. `tests/test_baselines_oracle.py` now enumerates every partition
+for n = 4..8 and checks the solver against brute force.
 
-#### 2. **Circuit Generator Service** 
-- Generates QAOA, VQE, and quantum kernel circuits
-- Parameterized ansatz generation
-- Circuit optimization and compilation
+The rest of the platform was then measured the same way and mostly failed. Rather than
+repair seven services, this repository was **shrunk to what is verified**. The deleted code
+is in git history at `4971088`; `SCAFFOLDING.md` records what it faked and why it went.
 
-#### 3. **Execution Orchestrator Service**
-- Schedules experiments on simulators and QPUs
-- Backend selection and management
-- Resource allocation and job scheduling
-- Execution monitoring and error handling
+## What is actually here
 
-#### 4. **Error Mitigation Service**
-- Implements Zero Noise Extrapolation (ZNE), Probabilistic Error Cancellation (PEC), and Clifforg Data Regression (CDR)
-- Compares mitigated vs unmitigated results
-- Validates against classical baselines
+| Component | Status |
+|---|---|
+| `src/optimization/problems.py` | Real Max-Cut and portfolio structures, seeded and deterministic |
+| `src/optimization/classical.py` | Exact Max-Cut via MILP linearisation, verified against brute force for n = 4..8; real greedy heuristics |
+| `src/error_mitigation_service/zne.py` | Richardson and least-squares extrapolation, unitary folding — agrees with Mitiq to 2.66e-15 |
+| `src/error_mitigation_service/service.py` | Closed-loop ZNE: folds, executes each scale factor, extrapolates |
+| `src/execution_orchestrator_service/service.py` | Aer execution with an optional depolarising noise model |
+| `src/hybrid_baseline_service/service.py` | MILP and heuristic baselines are real; metaheuristic and ML raise |
+| `src/optimization/qaoa.py` | Real circuits and Hamiltonians — **but untested and uncalled**. Promising, not trusted |
 
-#### 5. **Hybrid Baseline Service**
-- Runs classical algorithms (MILP, heuristics, metaheuristics, ML)
-- Provides comparative metrics and optimality gaps
-- Offers reference performance benchmarks
+**79 tests, all passing**, against qiskit 2.5.2, mitiq 1.0.0 and cvxpy 1.9.2.
 
-#### 6. **HPO Evolution Service**
-- Uses Optuna and evolutionary algorithms for hyperparameter search
-- Tracks candidate performance and maintains Pareto fronts
-- Structural optimization of quantum circuits
+Two results worth quoting, because they are measurements rather than claims. On an
+exponentially decaying signal, extrapolation reduces error against ground truth from 0.139
+to 0.0027. On a Bell state under 3% depolarising noise, closed-loop ZNE lands within 0.0007
+of the analytic parity against 0.029 unmitigated — roughly 40x closer.
 
-#### 7. **Experiment Registry & RAG Service**
-- MLflow-backed registry for experiments
-- Hybrid search and question-answering over prior work
-- Long-term learning from experimental outcomes
+One correctness requirement, learned the hard way: **execution must transpile at
+`optimization_level=0`.** The default optimiser cancels the adjacent inverse gate pairs that
+unitary folding inserts, so every scale factor collapses to the same circuit, noise is never
+amplified, and ZNE reports a confident value extrapolated from three measurements of one
+circuit. No amount of extrapolation mathematics catches that — the values are
+self-consistent and the fit exact. Only the physical invariant does: a circuit with more
+noisy operations must measure worse. It is asserted in `tests/test_zne_end_to_end.py` and
+verified to fail when the optimisation level is restored.
 
 ## Quick Start
 
 ### Prerequisites
 
-**Python 3.11.** Not 3.9, and not 3.12+. `mitiq` — which the error-mitigation tests
-check against — cannot be installed on 3.12 or later; on those versions pip silently
-falls back to a `0.0.0` placeholder that imports but has no `mitiq.zne`, and six tests
-fail in a way that looks like broken code rather than a broken environment.
+**Python 3.11.** Not 3.9, and not 3.12+. `mitiq` cannot be installed on 3.12 or later; on
+those versions pip silently falls back to a `0.0.0` placeholder that imports, reports a
+version, and has no `mitiq.zne`. Six tests then fail in a way that looks like broken code
+rather than a broken environment.
 
-### Installation
-
-1. Clone the repository:
 ```bash
 git clone https://github.com/iconbaypark2900/quantum_hybrid_research_optimization_lab.git
 cd quantum_hybrid_research_optimization_lab
-```
 
-2. Create a virtual environment and install dependencies:
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+
+python -m pytest                                    # 79 tests
+PYTHONPATH=. python examples/qoptisolve_usage.py    # portfolio + Max-Cut, real output
 ```
 
-3. Run the test suite:
-```bash
-python -m pytest
-```
+There is no application to start. This is a library and its tests.
 
-This is currently the only entry point that does what it says. There is no application
-to start: what exists is a library of verified components — exact and heuristic Max-Cut
-baselines, zero-noise extrapolation checked against Mitiq, and circuit execution on
-Aer — plus the tests that pin them. See `SCAFFOLDING.md` for what is not implemented,
-and `.claude/commands/` for the work queued to change that.
+## What is not implemented
 
-## Key Workflows
+`SCAFFOLDING.md` is the authoritative list — what each component faked, what it would take
+to make it real, and which fabrications have since been closed. It is written to be read
+before trusting anything here.
 
-### 1. Problem Definition & Registration
-```python
-from orchestrator import QuantumHybridOrchestrator
+The largest gap: **nothing converts a problem to canonical QUBO/Ising form**, so nothing
+produces a quantum objective value. Until that exists there is no quantum-vs-classical
+comparison to make, only a classical solver with an oracle over it.
 
-orchestrator = QuantumHybridOrchestrator()
-problem_spec = {
-    "problem_id": "portfolio_optimization_001",
-    "type": "combinatorial_optimization",
-    "description": "Portfolio optimization with risk constraints",
-    "variables": {"n_assets": 20, "budget": 10}
-}
-result = await orchestrator.run_define_problem_pipeline(problem_spec)
-```
+## What is queued
 
-### 2. Quantum Experiment Execution
-```python
-# Run a quantum experiment with automatic error mitigation
-experiment_result = await orchestrator.run_quantum_experiment_pipeline(
-    problem_id="portfolio_optimization_001",
-    experiment_template="qaoa",
-    backend="simulator",
-    apply_error_mitigation=True,
-    depth=3,
-    problem_size=6
-)
-```
-
-### 3. Hyperparameter Optimization
-```python
-# Evolve optimal hyperparameters for quantum circuits
-search_space = {
-    "depth": {"type": "int", "low": 1, "high": 10},
-    "learning_rate": {"type": "float", "low": 0.001, "high": 0.1}
-}
-hpo_result = await orchestrator.run_hpo_evolution_pipeline(
-    optimization_target="minimize_energy",
-    search_space=search_space,
-    n_trials=50
-)
-```
-
-### 4. Comparative Evaluation
-```python
-# Compare quantum approaches to classical baselines
-quantum_configs = [
-    {"template": "qaoa", "parameters": {"depth": 3}},
-    {"template": "vqe", "parameters": {"depth": 5}}
-]
-classical_algorithms = ["heuristics", "milp"]
-
-comparison = await orchestrator.run_comparative_evaluation_pipeline(
-    problem_id="portfolio_optimization_001",
-    quantum_configs=quantum_configs,
-    classical_algorithms=classical_algorithms
-)
-```
-
-## Security & Governance
-
-- **Authentication**: OIDC Single Sign-On
-- **Authorization**: Open Policy Agent (OPA) for fine-grained access control
-- **Secret Management**: HashiCorp Vault integration
-- **Privacy Protection**: Microsoft Presidio for PHI detection
-- **Tenant Isolation**: Project and namespace level isolation
-- **Audit Trails**: Full lineage tracking for experiments
-
-## Monitoring & Observability
-
-- **Experiment Tracking**: MLflow for comprehensive experiment logging
-- **LLM Observability**: LangFuse for tracing LLM interactions
-- **Infrastructure Metrics**: Prometheus + Grafana for system monitoring
-- **Application Logs**: Structured logging with appropriate levels
-- **Performance Profiling**: Built-in benchmarking capabilities
-
-## Non-Functional Requirements
-
-- **Reproducibility**: Complete experiment lineage and versioning
-- **Scalability**: From single-node to clustered deployments
-- **Extensibility**: Pluggable backends for new quantum hardware
-- **Compliance**: Configurable regulatory alignment (HIPAA, GDPR)
-
-## Contributing
-
-We welcome contributions! Please see our contributing guide for details on how to participate in the development of the Quantum Hybrid Research & Optimization Lab.
+`.claude/commands/` holds the work, one prompt per change, each carrying its file:line
+evidence, an oracle-based acceptance test, and its ordering against the others. Start with
+`/qhrol-status`, which re-measures this repository against a recorded baseline and reports
+what has drifted.
 
 ## License
 
-This project is licensed under the Apache 2.0 License - see the LICENSE file for details.
-
-## Future Roadmap
-
-- Integration with additional quantum hardware providers
-- Advanced causal inference for quantum-classical comparison
-- Federated learning capabilities for multi-site research
-- Real-time quantum device calibration and characterization
-- Advanced quantum machine learning algorithms
+Apache-2.0. See `LICENSE`.
