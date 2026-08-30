@@ -14,3 +14,4 @@ notebooks/.ipynb_checkpoints/
 *.egg
 build/
 dist/
+.claude/

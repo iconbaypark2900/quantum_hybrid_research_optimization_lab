@@ -35,13 +35,14 @@ is in git history at `4971088`; `SCAFFOLDING.md` records what it faked and why i
 | `src/optimization/problems.py` | Real Max-Cut and portfolio structures, seeded and deterministic |
 | `src/optimization/classical.py` | Exact Max-Cut via MILP linearisation, verified against brute force for n = 4..8; real greedy heuristics |
 | `src/optimization/canonical.py` | Max-Cut and portfolio to QUBO/Ising, verified by enumeration against two independent oracles |
+| `src/optimization/objective.py` | Measured counts reduced through the cost Hamiltonian to an expectation, with a real standard error |
 | `src/error_mitigation_service/zne.py` | Richardson and least-squares extrapolation, unitary folding — agrees with Mitiq to 2.66e-15 |
 | `src/error_mitigation_service/service.py` | Closed-loop ZNE: folds, executes each scale factor, extrapolates |
 | `src/execution_orchestrator_service/service.py` | Aer execution with an optional depolarising noise model |
 | `src/hybrid_baseline_service/service.py` | MILP and heuristic baselines are real; metaheuristic and ML raise |
 | `src/optimization/qaoa.py` | Real circuits and Hamiltonians; recovers known optima and never exceeds the exact solver |
 
-**142 tests, all passing.** Verified on Python 3.11.16 against qiskit 2.5.2, mitiq 1.0.0
+**201 tests, all passing.** Verified on Python 3.11.16 against qiskit 2.5.2, mitiq 1.0.0
 and cvxpy 1.9.2, and on Python 3.10.21 against qiskit 2.4.2 and mitiq 0.47.0 — the pins in
 `pyproject.toml` are floors, and these are what actually resolved.
 
@@ -85,11 +86,14 @@ cd quantum_hybrid_research_optimization_lab
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt        # editable install; dependencies live in pyproject.toml
 
-python -m pytest                       # 142 tests
+python -m pytest                       # 201 tests
 python examples/qoptisolve_usage.py    # portfolio + Max-Cut, real output
+python benchmark.py                    # the quantum-vs-classical comparison
 ```
 
-There is no application to start. This is a library and its tests.
+`benchmark.py` is the entry point: it builds a Max-Cut instance, solves it exactly,
+runs QAOA on Aer with and without zero-noise extrapolation, and reports the comparison
+with its provenance — seed, shots, depth, backend, noise model.
 
 ## What is not implemented
 
@@ -97,18 +101,19 @@ There is no application to start. This is a library and its tests.
 to make it real, and which fabrications have since been closed. It is written to be read
 before trusting anything here.
 
-The largest gap: **nothing reduces a measured bitstring distribution to an objective
-value**, so there is still no quantum number to compare. The problem now converts to QUBO
-correctly; what is missing is the step from Aer counts, through the cost Hamiltonian, to a
-scalar. Until that exists there is no quantum-vs-classical comparison to make, only a
-classical solver with an oracle over it.
+Still open: PEC, CDR and VNLE raise rather than pretend, as do the metaheuristic and
+machine-learning baselines. QAOA runs at fixed depth with a simple optimiser and is not
+competitive with the exact solver — the benchmark reports that plainly rather than
+selecting a framing where it wins.
 
-## What is queued
+## Drift detection
 
-`.claude/commands/` holds the work, one prompt per change, each carrying its file:line
-evidence, an oracle-based acceptance test, and its ordering against the others. Start with
-`/qhrol-status`, which re-measures this repository against a recorded baseline and reports
-what has drifted.
+`tests/test_repository_claims.py` asserts the invariants this repository claims, rather
+than leaving them to a checklist someone has to remember. It fails if a measured quantity
+is ever read with a numeric default again, if a source module stops being reachable from
+any test, if the interpreter bound leaves `pyproject.toml`, or if a second dependency
+manifest appears. Each of those corresponds to a defect that shipped here and survived for
+months.
 
 ## License
 

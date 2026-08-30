@@ -48,8 +48,12 @@ jobs:
         run: python -m pytest -q
 
       - name: Usage example
-        # The only runnable entry point besides the tests.
         run: python examples/qoptisolve_usage.py
+
+      - name: Benchmark
+        # The entry point. Small instance so CI stays quick; the point is that
+        # it runs end to end and reports real numbers on both sides.
+        run: python benchmark.py --n-nodes 5 --shots 512 --max-iter 5
 
   compile:
     # Deliberately pinned to the oldest supported interpreter, and deliberately

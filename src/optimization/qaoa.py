@@ -168,35 +168,15 @@ class QAOA:
             qc.rx(2 * beta, i)
 
     def _bits_from_counts_key(self, key: str, num_qubits: int) -> np.ndarray:
-        """Convert a Qiskit counts key to a bit array indexed by qubit.
+        """Decode a counts key. Delegates to the single shared implementation.
 
-        Qiskit writes the key most-significant-qubit first, so it is reversed
-        here to give bits[i] == the measurement of qubit i.
-
-        Refuses a key carrying more than one classical register rather than
-        silently reading the wrong one. That is not hypothetical: these
-        circuits used to declare a classical register *and* call measure_all(),
-        which adds a second. The key was then "1000 0000", the space was
-        stripped, and the first n bits of the reversed string came from the
-        register that was never written -- so every outcome decoded to
-        all-zeros, and solve_maxcut reported cut_value 0.0 with a converged
-        optimiser on a graph whose optimum is 4.
+        There were two decoders in this repository and only one was correct.
+        `src/optimization/objective.py` holds the canonical one so they cannot
+        drift; this wrapper exists only to keep the ndarray return type the
+        solvers below already expect.
         """
-        if ' ' in key.strip():
-            raise ValueError(
-                f"counts key {key!r} spans more than one classical register. "
-                "Build the circuit with a single register (measure_all() adds "
-                "one) -- concatenating them here silently reads the wrong bits.")
-        sanitized = key.strip()
-        if len(sanitized) < num_qubits:
-            sanitized = sanitized.zfill(num_qubits)
-        if len(sanitized) != num_qubits:
-            raise ValueError(
-                f"counts key {key!r} has {len(sanitized)} bits, expected "
-                f"{num_qubits}")
-        ordered = sanitized[::-1]
-        return np.fromiter((1 if ch == '1' else 0 for ch in ordered),
-                           dtype=int, count=num_qubits)
+        from .objective import bits_from_counts_key
+        return np.asarray(bits_from_counts_key(key, num_qubits), dtype=int)
 
     def solve_portfolio(self, problem: 'PortfolioProblem', p: int = 1,
                         optimizer: str = 'SPSA', max_iter: int = 100) -> Dict:

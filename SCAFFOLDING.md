@@ -93,6 +93,27 @@ level is restored.
 
 ## Known-broken, historical record
 
+**The comparison scored a real optimum against a default argument** (fixed
+2026-08-30). `compute_optimality_gaps` read the quantum number as
+`quantum_result.get('objective_value', 0.0)` — a silent default, for a key nothing
+in this repository produced. It then computed a relative gap from it, attached an
+interpretation, and returned it as the headline result.
+
+Beside it, the confidence interval was the literal
+`[relative_gap - 0.05, relative_gap + 0.05]`, commented `# Simulated CI`: a fixed
+width with no variance, no bootstrap and no shot noise behind it. A confidence
+interval is the archetypal number a reader takes as a measurement — it is an explicit
+quantitative claim about uncertainty — and this one was a constant. `_interpret_gap`
+completed the picture by returning "Significant quantum advantage (>10% improvement)"
+from a single, unseeded, unreplicated run.
+
+All three are gone. The objective is refused when absent, the interval is derived from
+a standard error computed over the measured distribution and omitted when there is
+none, and the word "significant" is not used until something computes it.
+`tests/test_repository_claims.py` fails if a measured quantity is read with a numeric
+default again — and it found a second live instance the moment it was written,
+`list_baseline_results` reporting an absent objective as `0`.
+
 **QAOA decoded every measurement to all-zeros** (fixed 2026-08-30). The only real
 quantum solver in the repository had never been run. The first time it was, on a
 4-cycle whose optimum is 4:
@@ -174,6 +195,16 @@ what to trust:
   `solve_portfolio_greedy` are real greedy heuristics.
 - `src/error_mitigation_service/zne.py` — real Richardson and linear
   extrapolation, and unitary folding.
+- `src/optimization/objective.py` — reduces measured counts through the cost
+  Hamiltonian to an expectation value, with a standard error computed from the
+  distribution actually measured. Reports the best single sample beside it, named for
+  what it is: a maximum over shots, which improves with shots even for a circuit that
+  encodes nothing.
+- `src/hybrid_baseline_service/service.py` — `compute_optimality_gaps` now refuses a
+  quantum result carrying no objective value, offers an interval only when one was
+  measured, and states the gap without asserting significance.
+- `benchmark.py` — the entry point. Builds, solves exactly, runs QAOA with ZNE against
+  the cost observable, and reports the comparison with its provenance.
 - `src/optimization/canonical.py` — QUBO and Ising conversion, a minimisation by
   construction. Its minimum agrees with brute force and with the verified MILP solver,
   and it values every assignment correctly, not merely the optimum.
