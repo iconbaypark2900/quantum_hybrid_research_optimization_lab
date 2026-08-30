@@ -93,6 +93,36 @@ level is restored.
 
 ## Known-broken, historical record
 
+**The portfolio QAOA circuit did not encode the portfolio problem** (fixed
+2026-08-30). Four defects at once, none visible from the result object:
+
+- the cost layer read only `problem.covariances` and never `problem.returns`, so
+  expected return — half the objective — was absent from the circuit;
+- it looped over ordered pairs `(i, j)` and `(j, i)`, applying every coupling twice;
+- it emitted a bare `rz` carrying the *pair* coefficient before each CX, adding a
+  single-qubit term proportional to the covariance row sum that appears in no
+  formulation of the problem;
+- there was no budget constraint at all.
+
+Meanwhile `solve_portfolio` scored its samples by a Sharpe ratio. **The circuit and
+the scorer were optimising different functions**, and the returned dict — allocation,
+final_cost, convergence — looked exactly as it would have if they agreed.
+
+Both now derive from `portfolio_to_qubo`, so they are the same objective by
+construction, and the cost layer is a single generic Ising builder shared with
+Max-Cut. Max-Cut's circuit is unchanged by that move and provably so: its Ising form
+has `h_i = 0` exactly and `J_ij = w_ij/2`, so `rz(2·J·γ)` is the `rz(w·γ)` the
+hand-written version emitted — the existing gate-count tests pass untouched.
+
+`tests/test_portfolio_qaoa_oracle.py` pins it against brute-force enumeration.
+Reintroducing each of the four defects fails 4, 2, 3 and 6 of its 15 tests.
+
+One test-design note worth keeping: the first version of those tests compared
+`str(instruction.operation.params)` on an *unbound* circuit, which compares
+`ParameterExpression` object reprs — memory addresses. It passed in isolation and
+failed in the full suite. Binding the parameters first compares the coefficients the
+circuit actually encodes.
+
 **The comparison scored a real optimum against a default argument** (fixed
 2026-08-30). `compute_optimality_gaps` read the quantum number as
 `quantum_result.get('objective_value', 0.0)` — a silent default, for a key nothing
