@@ -11,17 +11,20 @@ Hamiltonians, and drives SPSA/COBYLA. It is the best quantum code in the reposit
 
 Nothing has ever run it.
 
-- **No callers.** No module outside `migration_inbox/` imports it. Not `main.py`, not the
-  circuit generator service, not the execution orchestrator.
+- **No callers.** Nothing imports it — not the execution orchestrator, not the tests, not
+  the usage example. After the shrink it is the only module in `src/` that nothing reaches.
 - **No collected tests.** `pytest.ini` is `testpaths = tests`, and no file in `tests/`
   imports it. The 79-test suite covers ZNE, the classical baselines, and the qOptiSolve
   problem structures — not this.
-- **Its inherited tests are hidden.** `migration_inbox/qOptiSolve/tests/` holds **57 test
-  functions** that `testpaths` excludes from every bare `pytest` run.
+- **Its inherited tests are gone.** `migration_inbox/qOptiSolve/` held 57 test functions
+  that `pytest.ini`'s `testpaths = tests` excluded from every bare run, and the shrink
+  deleted the tree — it also contained the non-solving bilinear Max-Cut objective, with
+  tests that mocked cvxpy so they passed over it. Recover anything useful from `4971088`
+  rather than trusting it wholesale.
 
 So the integration commit `1f8aca7` copied the code into `src/optimization/` and left its
-tests behind, and `pytest.ini` is what conceals the shortfall. The repository reports 79
-green tests over a quantum solver with no coverage at all.
+tests behind. The repository reports 79 green tests over a quantum solver with no coverage
+at all.
 
 ## Why this is the same class of defect as the rest
 
@@ -29,10 +32,9 @@ green tests over a quantum solver with no coverage at all.
 non-solving Max-Cut solver survived for months. Here the tests were not merely weak —
 they were configured out of collection, which is the same outcome reached administratively.
 
-Worse: `migration_inbox/qOptiSolve/` is listed under **"What is genuinely real"** in
-`SCAFFOLDING.md`, but that tree still contains the original bilinear Max-Cut objective
-(`classical.py:135`) that the same document holds up as its most instructive failure —
-and its tests mock cvxpy, so they pass over it.
+`SCAFFOLDING.md` now lists this file under "What is genuinely real" with an explicit
+caveat that nothing tests or calls it — "promising rather than trusted". This command is
+what removes the caveat. Until then, do not cite a number that came out of it.
 
 ## Steps
 
@@ -48,14 +50,12 @@ and its tests mock cvxpy, so they pass over it.
      recovers the known optimum within sampling error, with the tolerance stated;
    - the counts decoder maps a bitstring to the same cut value the exact solver computes.
    Check the decoder specifically — it reads a register that the circuit may never measure.
-3. Triage the 57 hidden tests before deleting anything. Some cover behaviour `src/` still
-   has; port those. Do not simply widen `testpaths` — that would collect a suite written
-   against the superseded copy, including tests that mock cvxpy and would pass over a
-   broken solver.
-4. Then delete `migration_inbox/qOptiSolve/`, and correct the `SCAFFOLDING.md` line that
-   vouches for it. Keep the technical paper.
-5. Remove `testpaths` or make it explicit that it is a deliberate scope, once nothing is
-   hidden behind it.
+3. The 57 inherited tests are recoverable from `4971088` if useful, but treat them as
+   suspect rather than as a starting point: they were written against the superseded copy,
+   and some mock cvxpy in a way that would pass over a broken solver. Port behaviour, not
+   assertions.
+4. Update the `SCAFFOLDING.md` entry to drop the "untested and uncalled" caveat once it
+   is no longer true.
 
 ## Acceptance
 

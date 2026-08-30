@@ -17,9 +17,9 @@ quantum_obj = quantum_result.get('objective_value', 0.0)   # service.py:271
 A silent `.get` default. **No component in this repository produces that key.** The
 execution orchestrator returns counts, probabilities, shot count, qubit count, circuit
 depth and timing (`src/execution_orchestrator_service/service.py:187-198`) — no objective
-value. So the moment `/qhrol-wire-baselines` routes the demo into this method, the
-headline comparison evaluates a real MILP optimum against a hardcoded `0.0`, computes a
-gap from it, and reports the result with an interpretation attached.
+value. So the moment `/qhrol-benchmark-driver` routes a run into this method, the
+headline comparison would evaluate a real MILP optimum against a hardcoded `0.0`, compute
+a gap from it, and report the result with an interpretation attached.
 
 That is worse than the fabrications already purged. A fabricated number at least looks
 like a measurement someone intended to take; this one is a default argument.
@@ -39,13 +39,9 @@ like a measurement someone intended to take; this one is a default argument.
 So the only scalar the quantum side can produce is a noise-mitigated Bell parity, stored
 under a name that makes it look like a cut value.
 
-## The third blocker
-
-`main.py:328-332` calls `apply_mitigation(raw_result, technique)` with no `circuit=`
-kwarg. The service closes the loop only when a circuit is supplied
-(`src/error_mitigation_service/service.py:162`), so `_measure_at_scale_factors` never
-runs and the whole closed-loop ZNE machinery — the repository's best work, verified
-against Mitiq to 2.66e-15 — is unreachable from the application.
+Note that the closed ZNE loop itself is real and good — it folds, executes each scale
+factor on Aer, and extrapolates, verified against Mitiq to 2.66e-15. It is pointed at the
+wrong observable, not broken.
 
 ## Steps
 
@@ -58,8 +54,10 @@ against Mitiq to 2.66e-15 — is unreachable from the application.
    its result, and make `compute_optimality_gaps` **refuse** a quantum result that lacks
    the key rather than defaulting to `0.0`. Follow the repository's established pattern:
    raise with a message saying what is missing and what it would take.
-4. Pass the generated circuit and the cost observable from `main.py` Step 4 into
-   `apply_mitigation` so the closed ZNE loop actually runs on the problem circuit.
+4. Make `apply_mitigation` reachable with a real circuit and the cost observable — it
+   closes the loop only when a circuit is supplied
+   (`src/error_mitigation_service/service.py:162`), and nothing currently supplies one
+   outside the tests. `/qhrol-benchmark-driver` is what will call it.
 5. Rename or separate the parity path so a Bell-state validation value can never be read
    as a problem objective. `average_objective_value` should mean one thing.
 6. Test with an oracle, not a shape check: on a small graph, the expectation value of the
@@ -72,16 +70,15 @@ against Mitiq to 2.66e-15 — is unreachable from the application.
   nothing — a missing quantum objective raises.
 - A QAOA run on a 4-cycle produces an objective value that the exact solver agrees with
   to within sampling error, and the test states the tolerance and why.
-- `apply_mitigation` receives a circuit from `main.py`, and `_measure_at_scale_factors`
-  is exercised by the demo path, not only by tests.
+- `_measure_at_scale_factors` runs against a problem circuit with a cost observable, not
+  only against the Bell-state fixture.
 - Full suite green.
 
 ## Ordering
 
-After `/qhrol-canonical-form` (it needs the QUBO) and before `/qhrol-honest-comparison`
-(which reports the number this produces). `/qhrol-wire-baselines` must not be considered
-finished until this lands — wiring the comparison without it produces a confident gap
-computed against `0.0`.
+After `/qhrol-canonical-form` (it needs the QUBO) and before `/qhrol-benchmark-driver`
+and `/qhrol-honest-comparison`, both of which report the number this produces. A driver
+built before this lands would compute a confident optimality gap against `0.0`.
 
 ## Commit convention
 

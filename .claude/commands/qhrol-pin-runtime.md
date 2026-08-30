@@ -1,14 +1,14 @@
 ---
-description: Wave 3 — pin the Python version, fix the silent mitiq trap on 3.12+, and add the CI that would have caught every defect in the other commands.
+description: Do next — pin the Python version, trim the manifest to what installs, fix the silent mitiq trap on 3.12+, and add the CI that protects every later change.
 allowed-tools: Bash, Read, Edit, Write, Grep, Glob
 ---
 
 ## Task
 
 This repository has no CI (`.github/` does not exist) and no *enforced* Python version
-constraint — there is no `pyproject.toml` or `setup.py`, and the two places that do state
-a version disagree: `Dockerfile:2` builds on `python:3.11-slim` while `README.md:57` says
-"Python 3.9+". Both gaps cost real time to rediscover.
+constraint — there is no `pyproject.toml` or `setup.py`. The README now states 3.11 in
+prose, but nothing makes that true at install time, and `requirements.txt` still cannot be
+installed at all. Both gaps cost real time to rediscover.
 
 ## The mitiq trap, which is the sharp one
 
@@ -21,12 +21,12 @@ cleanly, imports, reports a version, and contains three modules and no
 
 ### The paradox this creates
 
-`mitiq` forces the interpreter **below** 3.12. But `main_orchestrator.py:114` uses a
-multi-line f-string expression, which is a `SyntaxError` **before** 3.12 (PEP 701 legalised
-it in 3.12). No single interpreter satisfies both. Whatever you pin, one of the two has to
-be fixed rather than accommodated — and since `mitiq` is a hard external constraint and
-`main_orchestrator.py` has never run, the file is what gives. That makes
-`/qhrol-entrypoints` a prerequisite for this command's CI job, not an independent cleanup.
+**Resolved in `4971088`.** `mitiq` forces the interpreter below 3.12, while
+`main_orchestrator.py:114` (deleted) used a multi-line f-string expression that is a `SyntaxError`
+before 3.12 (PEP 701 legalised it there). No single interpreter satisfied both. Since
+`mitiq` is a hard external constraint and that file had never run, the file is what gave.
+Recorded here because the pin only makes sense with the reason attached — and because a
+future file with the same construct would silently reintroduce it on 3.12+.
 
 ### The manifest has never installed
 
@@ -48,35 +48,37 @@ Nothing in the repository tells a reader this. That is the whole defect.
 ## Steps
 
 1. Declare the supported interpreter. Add a `pyproject.toml` with
-   `requires-python = ">=3.10,<3.12"`, or at minimum state it at the top of
-   `requirements.txt` and in the README prerequisites — which currently say
-   "Python 3.9+", a version the repo does not support.
-2. Add an install-time guard against the placeholder: pin `mitiq>=0.16,!=0.0.0`,
+   `requires-python = ">=3.10,<3.12"`, so pip enforces what the README asserts.
+2. **Trim the manifest to what installs and what is imported.** It declares 52 packages,
+   of which nine are imported from `src/`; the shrink deleted everything that pulled in
+   the rest. Remove `microsoft-presidio` outright — it does not exist on PyPI — and add
+   `pytest`, which the suite needs and which was never declared. The result should be
+   roughly ten packages.
+3. Add an install-time guard against the placeholder: pin `mitiq>=0.16,!=0.0.0`,
    and add a test asserting `mitiq.zne.scaling.fold_global` imports. A dependency
    that silently degrades to a stub is worth one line of test.
-3. Add `.github/workflows/ci.yml`:
+4. Add `.github/workflows/ci.yml`:
    - matrix on 3.10 and 3.11
-   - `python -m compileall -q .` — **on the 3.11 job specifically**. This catches the
-     `main_orchestrator.py` `SyntaxError`, which has been in `main` since the first
-     commit but only exists below Python 3.12 (see the paradox above). On a 3.12+ job
-     the same command exits 0 and proves nothing.
+   - `python -m compileall -q .` — **on the 3.11 job specifically**. It is clean today,
+     but it guards against reintroducing a 3.12-only construct; on a 3.12+ job it would
+     pass over exactly that and prove nothing.
    - `python -m pytest -q`
-   - `python main.py` as a smoke check, asserting a non-zero exit or a
-     `degraded` status while pipelines fail. Once `/qhrol-honest-orchestrator`
-     lands, this is the check that keeps the demo honest.
-4. Record the verified environment somewhere a reader will find it — the actual
+   - `PYTHONPATH=. python examples/qoptisolve_usage.py` as a smoke check — currently the
+     only runnable entry point, and it needs `PYTHONPATH` set, which is worth catching if
+     that ever changes.
+5. Record the verified environment somewhere a reader will find it — the actual
    resolved versions the suite passes against, not the floor pins. `qiskit 2.5.2,
-   mitiq 1.0.0, cvxpy 1.9.2, Python 3.11` as of 2026-08-30.
-5. Note in the README that `mitiq` pulls `cirq`, whose Qiskit conversion needs
+   mitiq 1.0.0, cvxpy 1.9.2, Python 3.11.16` as of 2026-08-30.
+6. Note in the README that `mitiq` pulls `cirq`, whose Qiskit conversion needs
    `ply` — already correctly noted in `requirements.txt`; make sure that comment
    survives any dependency cleanup, since it documents a failure that only
    appears at point of use.
 
 ## Acceptance
 
-- A clean checkout on 3.11 installs from the manifest with no manual intervention and
-  runs the suite green. Do not gate on the number 79 — Waves 1 and 2 each add test files,
-  so the count will legitimately exceed the baseline by the time this command runs.
+- `pip install -r requirements.txt` succeeds on a clean 3.11 checkout — it does not today —
+  and the suite runs green. Do not gate on the number 79; later commands add test files, so
+  the count will legitimately exceed the baseline.
 - An install on 3.13 fails loudly at install or at test collection, naming the
   interpreter — it does not produce six confusing ZNE failures.
 - CI runs on push and fails on a file that does not compile.
@@ -84,10 +86,9 @@ Nothing in the repository tells a reader this. That is the whole defect.
 
 ## Ordering
 
-Runs **after** `/qhrol-entrypoints` (the interpreter pin is only coherent once
-`main_orchestrator.py` is resolved) and **before** `/qhrol-true-claims`, which rewrites
-the same manifest. All three touch `requirements.txt`; this is the one that establishes
-`requires-python` and the `mitiq` guard.
+Do this next. The shrink deleted everything that imported the heavy half of the manifest,
+so the real dependency set is now roughly ten packages — this is much smaller than it was
+when the command was written, and it unblocks CI, which protects every later change.
 
 ## Commit convention
 
