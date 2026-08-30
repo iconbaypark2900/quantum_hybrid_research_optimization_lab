@@ -54,34 +54,37 @@ The Quantum Hybrid Research & Optimization Lab is a comprehensive platform desig
 ## Quick Start
 
 ### Prerequisites
-- Python 3.9+
-- Docker (for containerized services)
-- Appropriate quantum computing provider accounts (for QPU access)
+
+**Python 3.11.** Not 3.9, and not 3.12+. `mitiq` — which the error-mitigation tests
+check against — cannot be installed on 3.12 or later; on those versions pip silently
+falls back to a `0.0.0` placeholder that imports but has no `mitiq.zne`, and six tests
+fail in a way that looks like broken code rather than a broken environment.
 
 ### Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/your-org/quantum_hybrid_research_optimization_lab.git
+git clone https://github.com/iconbaypark2900/quantum_hybrid_research_optimization_lab.git
 cd quantum_hybrid_research_optimization_lab
 ```
 
-2. Create virtual environment and install dependencies:
+2. Create a virtual environment and install dependencies:
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Start the database infrastructure:
+3. Run the test suite:
 ```bash
-docker-compose up -d
+python -m pytest
 ```
 
-4. Initialize the application:
-```bash
-python main_orchestrator.py
-```
+This is currently the only entry point that does what it says. There is no application
+to start: what exists is a library of verified components — exact and heuristic Max-Cut
+baselines, zero-noise extrapolation checked against Mitiq, and circuit execution on
+Aer — plus the tests that pin them. See `SCAFFOLDING.md` for what is not implemented,
+and `.claude/commands/` for the work queued to change that.
 
 ## Key Workflows
 
